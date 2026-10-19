@@ -199,6 +199,20 @@ function diagnosticVerdict(diagnostic: FrontDoorPermissionDiagnostic): string {
   return "UNKNOWN_EFFECTIVE";
 }
 
+import { openBrowserUrl } from "./commands/ui.js";
+
+async function defaultLaunchStudio(): Promise<number> {
+  const url = new DaemonClient().baseUrl;
+  console.log(`OpenRig Studio: ${url}`);
+  try {
+    await openBrowserUrl(url);
+    return 0;
+  } catch {
+    console.error(`Open the OpenRig Studio in your browser: ${url}`);
+    return 0;
+  }
+}
+
 async function defaultLaunchTui(): Promise<number> {
   const entry = resolveTuiPath(import.meta.dirname);
   if (!entry) throw new Error("mission-control TUI is not installed (no tui/dist/main.js next to this CLI)");
@@ -213,9 +227,16 @@ async function defaultLaunchTui(): Promise<number> {
   });
 }
 
+function resolveDefaultLauncher(): () => Promise<number> {
+  if (process.env.OPENRIG_FRONT_DOOR === "tui") {
+    return defaultLaunchTui;
+  }
+  return defaultLaunchStudio;
+}
+
 /**
  * The OWNED mission-control path, factored out so `rig tui` is a true ALIAS (not a
- * mirror) of what bare `rig` does: probe the daemon, then either launch the TUI and
+ * mirror) of what bare `rig` does: probe the daemon, then either launch the TUI/Studio and
  * exit with its code, or print the friendly first-impression degrade. Shared by
  * runFrontDoor (bare `rig`) and the `tui` subcommand — one launch path, no duplication.
  */
@@ -223,7 +244,7 @@ export async function openMissionControl(io: FrontDoorIo = {}): Promise<void> {
   const err = io.err ?? ((l: string) => process.stderr.write(l + "\n"));
   const exit = io.exit ?? ((c: number) => process.exit(c));
   const probe = io.probeDaemon ?? probeFrontDoor;
-  const launch = io.launchTui ?? defaultLaunchTui;
+  const launch = io.launchTui ?? resolveDefaultLauncher();
 
   const probeResult = normalizeProbe(await probe());
   // The daemon-DOWN / not-reachable states are EXACTLY what the crash-cart TUI exists to render — bare

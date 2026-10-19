@@ -1,6 +1,14 @@
 import { serve, type ServerType } from "@hono/node-server";
 import path from "node:path";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
+
+// Ensure standard user binary locations are present on PATH so that runtimes like agy, omp, etc. are always found
+const userLocalBin = path.join(os.homedir(), ".local", "bin");
+if (!process.env.PATH?.includes(userLocalBin)) {
+  process.env.PATH = `${userLocalBin}${path.delimiter}${process.env.PATH || ""}`;
+}
+
 import { endProbeGroupsOnStartupSignal, stopRuntimeProbes } from "./adapters/bounded-probe-exec.js";
 import { closeHttpServer, createDaemonShutdown, DAEMON_SHUTDOWN_RECEIPT, trackHttpServerResponses } from "./daemon-shutdown.js";
 import { readOpenRigEnv, OPENRIG_HOME } from "./openrig-compat.js";

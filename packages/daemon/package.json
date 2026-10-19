@@ -81,6 +81,10 @@
     "./local-reading": {
       "types": "./dist/local-reading-surface.d.ts",
       "import": "./dist/local-reading-surface.js"
+    },
+    "./sidecar-server": {
+      "types": "./dist/sidecar/sidecar-server.d.ts",
+      "import": "./dist/sidecar/sidecar-server.js"
     }
   },
   "scripts": {

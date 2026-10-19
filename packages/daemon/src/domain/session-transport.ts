@@ -1444,6 +1444,8 @@ export interface SendResult {
   sent?: boolean;
   /** Present only when transport.verify_input_box applied to this send. */
   inputBox?: InputBoxEvidence;
+  /** Antigravity or provider conversation ID when available. */
+  conversationId?: string;
 }
 
 /** One reading of a Claude Code or Codex input box: `exact` (the sent text, word boundaries kept), `ambiguous`
@@ -1646,6 +1648,18 @@ export class SessionTransport {
       LIMIT 1
     `).get(sessionName) as SessionMetaRow | undefined;
 
+    if (!row && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionName)) {
+      return {
+        runtime: "antigravity",
+        attachmentType: "external_cli",
+        nodeId: "external",
+        pane: null,
+        occupant: null,
+        resumeToken: sessionName,
+        rotation: null,
+      };
+    }
+
     return {
       runtime: row?.runtime ?? null,
       attachmentType: row?.attachment_type ?? null,
@@ -1694,11 +1708,29 @@ export class SessionTransport {
   }
 
   private resolveBySessionName(sessionName: string): ResolveResult {
-    const sessionRows = this.db
+    let targetSessionName = sessionName;
+    let sessionRows = this.db
       .prepare("SELECT node_id, session_name FROM sessions WHERE session_name = ? ORDER BY id DESC")
       .all(sessionName) as SessionRow[];
 
     if (sessionRows.length === 0) {
+      sessionRows = this.db
+        .prepare("SELECT node_id, session_name FROM sessions WHERE resume_token = ? ORDER BY id DESC")
+        .all(sessionName) as SessionRow[];
+      if (sessionRows.length > 0 && sessionRows[0]?.session_name) {
+        targetSessionName = sessionRows[0].session_name;
+      }
+    }
+
+    if (sessionRows.length === 0) {
+      // Direct Antigravity conversation UUID
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionName)) {
+        return {
+          ok: true,
+          sessions: [{ sessionName, rigName: "antigravity", nodeLogicalId: "external" }],
+        };
+      }
+
       return {
         ok: false,
         code: "not_found",
@@ -1740,7 +1772,7 @@ export class SessionTransport {
     const [rigName, meta] = Array.from(rigNames.entries())[0]!;
     return {
       ok: true,
-      sessions: [{ sessionName, rigName, nodeLogicalId: meta.nodeLogicalId }],
+      sessions: [{ sessionName: targetSessionName, rigName, nodeLogicalId: meta.nodeLogicalId }],
     };
   }
 
@@ -2174,6 +2206,7 @@ export class SessionTransport {
       sentHash: null as string | null,
     } : null;
     const observe = (result: SendResult): SendResult => {
+      if (sessionMeta.resumeToken) result = { ...result, conversationId: sessionMeta.resumeToken };
       if (result.ok && runtimeAdvisory) result = { ...result, warning: [runtimeAdvisory, result.warning].filter(Boolean).join(" ") };
       if (observed && this.captureObserver) {
         safeRecord(this.captureObserver, {
@@ -2195,6 +2228,31 @@ export class SessionTransport {
     let waitEvidence: Pick<SendResult, "activity" | "waitedMs" | "attempts"> = {};
 
     if (sessionMeta.attachmentType === "external_cli") {
+      if (runtime === "antigravity" && sessionMeta.resumeToken) {
+        try {
+          const { execFileSync } = await import("node:child_process");
+          const fs = await import("node:fs");
+          const os = await import("node:os");
+          const nodePath = await import("node:path");
+          const agentApi = nodePath.join(os.homedir(), ".gemini", "antigravity", "bin", "agentapi");
+          if (fs.existsSync(agentApi)) {
+            execFileSync(agentApi, ["send-message", sessionMeta.resumeToken, text], { encoding: "utf8" });
+            return observe({
+              ok: true,
+              sessionName,
+              outcome: "delivered",
+              conversationId: sessionMeta.resumeToken,
+            });
+          }
+        } catch (err) {
+          return {
+            ok: false,
+            sessionName,
+            reason: "send_failed",
+            error: `Failed to deliver via agentapi: ${(err as Error).message}`,
+          };
+        }
+      }
       return {
         ok: false,
         sessionName,

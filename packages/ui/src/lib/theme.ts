@@ -41,8 +41,8 @@ export const THEMES: readonly ThemeOption[] = [
   { id: "system", label: "System" },
 ] as const;
 
-/** No stored choice → follow the OS (`system`). */
-export const DEFAULT_THEME: ThemeId = "system";
+/** No stored choice → Antigravity dark. */
+export const DEFAULT_THEME: ThemeId = "dark";
 
 function isThemeId(value: unknown): value is ThemeId {
   return value === "light" || value === "dark" || value === "system";

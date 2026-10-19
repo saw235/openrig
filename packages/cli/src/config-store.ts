@@ -268,7 +268,7 @@ const DEFAULTS = {
   files: { allowlist: "" },
   progress: { scanRoots: "" },
   ui: {
-    enabled: false,
+    enabled: true,
     timezone: "America/Los_Angeles",
     preview: {
       refreshIntervalSeconds: 3,
@@ -281,10 +281,10 @@ const DEFAULTS = {
     providerAuthEnvAllowlist: "",
   },
   // V1 Phase 4 — Advisor default per universal-shell.md L83;
-  // Operator default empty per L84 ("not configured").
+  // Operator default operator-agent@kernel.
   agents: {
     advisorSession: "advisor-lead@kernel",
-    operatorSession: "",
+    operatorSession: "operator-agent@kernel",
   },
   // V1 Phase 5 P5-3 — feed subscription defaults per for-you-feed.md
   // L144–L151. action_required forced ON in UI (load-bearing

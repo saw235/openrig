@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import { existsSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { connectionErrorCode, formatDaemonHostForUrl } from "./client.js";
@@ -514,6 +515,11 @@ export function buildDaemonEnv(
   }
   if (opts.skipKernelBoot) {
     env["OPENRIG_NO_KERNEL"] = "1";
+  }
+
+  const localBin = path.join(os.homedir(), ".local", "bin");
+  if (!env["PATH"]?.includes(localBin)) {
+    env["PATH"] = `${localBin}${path.delimiter}${env["PATH"] || ""}`;
   }
 
   return env;

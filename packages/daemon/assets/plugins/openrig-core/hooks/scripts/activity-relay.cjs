@@ -46,12 +46,19 @@ function firstString(...values) {
   return null;
 }
 
-function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date()) {
+function getArgvEvent(argv = process.argv) {
+  const idx = argv.indexOf("--event");
+  if (idx !== -1 && argv[idx + 1]) return argv[idx + 1];
+  return null;
+}
+
+function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date(), argv = process.argv) {
   const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
   const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
   const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
   const generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
   const hookEvent = firstString(
+    getArgvEvent(argv),
     providerPayload.hookEvent,
     providerPayload.hookEventName,
     providerPayload.hook_event_name,
@@ -65,10 +72,18 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     providerPayload.subtype,
     providerPayload.notification_type,
     providerPayload.notificationType,
+    providerPayload.toolCall && providerPayload.toolCall.name,
     providerPayload.tool_name,
     providerPayload.toolName,
     providerPayload.source,
     providerPayload.matcher
+  );
+
+  const turnId = firstString(
+    providerPayload.turn_id,
+    providerPayload.turnId,
+    providerPayload.stepIdx !== undefined ? String(providerPayload.stepIdx) : null,
+    providerPayload.step_idx !== undefined ? String(providerPayload.step_idx) : null
   );
 
   return {
@@ -78,7 +93,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     generation,
     hookEvent,
     subtype,
-    turnId: firstString(providerPayload.turn_id, providerPayload.turnId),
+    turnId,
     occurredAt: now().toISOString(),
   };
 }
@@ -146,15 +161,29 @@ async function postHookPayload(payload, env = process.env) {
   }
 }
 
-function buildSessionIdentityPayload(providerPayload, env = process.env, now = () => new Date()) {
+function buildSessionIdentityPayload(providerPayload, env = process.env, now = () => new Date(), argv = process.argv) {
   if (!providerPayload || typeof providerPayload !== "object") return null;
   const hookEvent = firstString(
+    getArgvEvent(argv),
     providerPayload.hookEvent, providerPayload.hookEventName,
     providerPayload.hook_event_name, providerPayload.event, providerPayload.eventName
   );
-  if (!hookEvent || hookEvent.toLowerCase() !== "sessionstart") return null;
+  const isStartOrInvocation = !hookEvent || [
+    "sessionstart",
+    "preinvocation",
+    "postinvocation",
+    "pretooluse",
+    "posttooluse",
+    "stop"
+  ].includes(hookEvent.toLowerCase());
+  if (!isStartOrInvocation) return null;
 
-  const sessionId = firstString(providerPayload.session_id, providerPayload.sessionId);
+  const sessionId = firstString(
+    providerPayload.session_id,
+    providerPayload.sessionId,
+    providerPayload.conversationId,
+    providerPayload.conversation_id
+  );
   if (!sessionId) return null;
 
   const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
@@ -176,7 +205,7 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
     nodeId,
     runtime,
     generation,
-    hookEvent,
+    hookEvent: hookEvent || "SessionStart",
     source,
     resumeLaunch,
     // The daemon finds the Claude that ran this hook from its parent chain.
@@ -290,6 +319,21 @@ async function main() {
   await postHookPayload(payload);
   if (identityPayload) {
     await postHookPayload(identityPayload);
+  }
+
+  // Contract response for Antigravity: must return valid JSON on stdout
+  const isAntigravity = Boolean(
+    (process.env.OPENRIG_RUNTIME || "").toLowerCase() === "antigravity" ||
+    providerPayload.conversationId ||
+    process.argv.includes("--event")
+  );
+  if (isAntigravity) {
+    const rawEvent = (firstString(getArgvEvent(process.argv), providerPayload.event, providerPayload.eventName) || "").toLowerCase();
+    if (rawEvent === "pretooluse") {
+      process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
+    } else {
+      process.stdout.write("{}\n");
+    }
   }
 }
 

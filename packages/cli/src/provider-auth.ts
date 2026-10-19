@@ -120,6 +120,31 @@ export function checkCodexAuth(deps: ProviderAuthDeps, installed: boolean): Prov
   }
 }
 
+/** Google Antigravity: the native `agy` CLI keeps its OAuth token in `~/.gemini/antigravity-cli`.
+ *  Optional runtime, so an absent CLI is skipped rather than failed. */
+export function checkAntigravityAuth(deps: ProviderAuthDeps, installed: boolean): ProviderCheck {
+  if (!installed) {
+    return {
+      name: "antigravity_auth",
+      status: "skipped",
+      message: "Skipped: Google Antigravity (agy) is not installed.",
+      reason: "Authentication cannot be checked until the agy CLI is installed.",
+    };
+  }
+  const env = deps.env ?? process.env;
+  const home = env.ANTIGRAVITY_CLI_HOME?.trim() || path.join(env.HOME ?? "", ".gemini", "antigravity-cli");
+  if (deps.readFile(path.join(home, "antigravity-oauth-token")) !== null) {
+    return { name: "antigravity_auth", status: "pass", message: "Google Antigravity authentication available." };
+  }
+  return {
+    name: "antigravity_auth",
+    status: "fail",
+    message: "Google Antigravity (agy) is installed but not signed in.",
+    reason: "Antigravity seats cannot launch until agy has been signed in.",
+    fix: "Run `agy` once and complete the Google sign-in, then rerun `rig setup`.",
+  };
+}
+
 /** Read-only checks: neither installs a CLI nor starts a login or agent session. */
 export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] {
   const checks: ProviderCheck[] = [];
@@ -140,6 +165,14 @@ export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] 
       });
     }
     checks.push(auth(deps, installed));
+  }
+  // Optional third runtime: reported only when its CLI is present, so existing setups see no new failure.
+  try {
+    deps.exec("agy --help");
+    checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity available." });
+    checks.push(checkAntigravityAuth(deps, true));
+  } catch {
+    // agy not installed: nothing to report.
   }
   return checks;
 }

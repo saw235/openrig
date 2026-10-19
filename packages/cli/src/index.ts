@@ -41,6 +41,7 @@ import { queueCommand, type QueueDeps } from "./commands/queue.js";
 import { slackCommand, type SlackDeps } from "./commands/slack.js";
 import { projectCommand, type ProjectDeps } from "./commands/project.js";
 import { viewCommand, type ViewDeps } from "./commands/view.js";
+import { sidecarCommand } from "./commands/sidecar.js";
 import { terminalCommand, type TerminalDeps } from "./commands/terminal.js";
 import { watchdogCommand, type WatchdogDeps } from "./commands/watchdog.js";
 import { workflowCommand, type WorkflowDeps } from "./commands/workflow.js";
@@ -259,6 +260,8 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(scopeCommand());
   // OPR.0.4.4.19 FR-8 — rig proof: the C1 proof-drop write path.
   program.addCommand(proofCommand());
+  // Standalone Antigravity Sidecar
+  program.addCommand(sidecarCommand());
 
   return program;
 }

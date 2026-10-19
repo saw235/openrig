@@ -611,13 +611,13 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "ui.preview.max_pins": return 4;
     case "ui.preview.default_lines": return 50;
     case "ui.timezone": return "America/Los_Angeles";
-    case "ui.enabled": return false;
+    case "ui.enabled": return true;
     case "recovery.auto_drive_provider_prompts": return false;
     case "recovery.provider_auth_env_allowlist": return "";
     // V1 Phase 4 — Advisor default per universal-shell.md L83;
-    // Operator default empty per L84 ("not configured").
+    // Operator default operator-agent@kernel.
     case "agents.advisor_session": return "advisor-lead@kernel";
-    case "agents.operator_session": return "";
+    case "agents.operator_session": return "operator-agent@kernel";
     // V1 Phase 5 P5-3 — For You feed subscription defaults per
     // for-you-feed.md L144–L151. action_required is forced ON in the UI
     // (cannot be disabled per L145 — load-bearing human-gate items);

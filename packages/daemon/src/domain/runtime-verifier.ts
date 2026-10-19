@@ -124,6 +124,13 @@ export class RuntimeVerifier {
     return result;
   }
 
+  /** Google Antigravity: the native `agy` CLI (`agy --version`, fallback `agy --help`). */
+  async verifyAntigravity(): Promise<RuntimeVerification> {
+    const result = await this.verifyVersionOrHelp("agy", "antigravity");
+    this.persist(result);
+    return result;
+  }
+
   /** OMP is an independent executable; do not inherit Pi's Node engine check. */
   async verifyOmp(): Promise<RuntimeVerification> {
     const result = await this.verifyVersionOrHelp("omp", "omp");
@@ -145,6 +152,7 @@ export class RuntimeVerifier {
         case "codex": results.push(await this.verifyCodex()); break;
         case "pi": results.push(await this.verifyPi()); break;
         case "omp": results.push(await this.verifyOmp()); break;
+        case "antigravity": results.push(await this.verifyAntigravity()); break;
         default: {
           const v = this.buildVerification(runtime, "not_found", null, null, `unknown runtime: ${runtime}`);
           this.persist(v);
