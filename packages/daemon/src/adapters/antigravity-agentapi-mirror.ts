@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -67,17 +68,32 @@ export class AntigravityAgentApiMirror {
     return store[session] ?? null;
   }
 
-  resolveProjectId(cwd: string): string {
-    // 1. Env variable takes precedence if set
-    if (process.env.ANTIGRAVITY_PROJECT_ID) {
-      return process.env.ANTIGRAVITY_PROJECT_ID;
-    }
+  resolveProjectId(cwd: string, rigOrPod?: string): string {
+    const rawPod = (rigOrPod || "").trim();
+    const candidateNames = rawPod
+      ? [rawPod.startsWith("OpenRig - ") ? rawPod : `OpenRig - ${rawPod}`, rawPod]
+      : [];
 
-    // 2. Search existing projects for matching workspace folder
     try {
       if (fs.existsSync(this.configProjectsDir)) {
         const resolvedCwd = nodePath.resolve(cwd);
         const files = fs.readdirSync(this.configProjectsDir);
+
+        // Pass 1: match project by dedicated rig or pod name (e.g. "OpenRig - openrig-dev")
+        if (candidateNames.length > 0) {
+          for (const file of files) {
+            if (!file.endsWith(".json")) continue;
+            try {
+              const raw = fs.readFileSync(nodePath.join(this.configProjectsDir, file), "utf-8");
+              const data = JSON.parse(raw) as { id?: string; name?: string };
+              if (data.id && data.name && candidateNames.includes(data.name)) {
+                return data.id;
+              }
+            } catch {}
+          }
+        }
+
+        // Pass 2: match project by EXACT cwd gitFolder resource
         for (const file of files) {
           if (!file.endsWith(".json")) continue;
           try {
@@ -91,22 +107,51 @@ export class AntigravityAgentApiMirror {
                 const uri = r.gitFolder?.folderUri;
                 if (uri && uri.startsWith("file://")) {
                   const projectPath = nodePath.resolve(uri.replace("file://", ""));
-                  if (resolvedCwd === projectPath || resolvedCwd.startsWith(projectPath + nodePath.sep)) {
+                  if (resolvedCwd === projectPath) {
                     return data.id;
                   }
                 }
               }
             }
-          } catch {
-            // ignore corrupt files
-          }
+          } catch {}
         }
       }
     } catch {
       // ignore
     }
 
-    // 3. Fallback to outside-of-project
+    // Pass 3: Create dedicated project for this rig if name provided
+    if (rawPod) {
+      const targetName = rawPod.startsWith("OpenRig - ") ? rawPod : `OpenRig - ${rawPod}`;
+      const newId = randomUUID();
+      const newProject = {
+        id: newId,
+        name: targetName,
+        projectResources: {
+          resources: [
+            {
+              gitFolder: {
+                folderUri: `file://${nodePath.resolve(cwd)}`,
+              },
+            },
+          ],
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false,
+      };
+      try {
+        fs.mkdirSync(this.configProjectsDir, { recursive: true });
+        fs.writeFileSync(
+          nodePath.join(this.configProjectsDir, `${newId}.json`),
+          JSON.stringify(newProject, null, 2),
+          "utf-8"
+        );
+        return newId;
+      } catch {}
+    }
+
+    // Pass 4: Fallback to outside-of-project
     return "outside-of-project";
   }
 
@@ -128,7 +173,7 @@ export class AntigravityAgentApiMirror {
       return store[session];
     }
 
-    const projectId = this.resolveProjectId(meta.cwd);
+    const projectId = this.resolveProjectId(meta.cwd, meta.rig || meta.pod);
     const title = meta.role
       ? `OpenRig: ${meta.role} (${meta.rig || "openrig"})`
       : `OpenRig: ${session}`;

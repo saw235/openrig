@@ -399,17 +399,18 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
         : {};
 
       const relay = this.activityRelayPath;
+      const nodeBin = process.execPath || "node";
       existing["openrig-activity-relay"] = {
         PreInvocation: [
           {
             type: "command",
-            command: `node "${relay}" --event PreInvocation`,
+            command: `"${nodeBin}" "${relay}" --event PreInvocation`,
           },
         ],
         PostInvocation: [
           {
             type: "command",
-            command: `node "${relay}" --event PostInvocation`,
+            command: `"${nodeBin}" "${relay}" --event PostInvocation`,
           },
         ],
         PreToolUse: [
@@ -418,7 +419,7 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
             hooks: [
               {
                 type: "command",
-                command: `node "${relay}" --event PreToolUse`,
+                command: `"${nodeBin}" "${relay}" --event PreToolUse`,
               },
             ],
           },
@@ -429,7 +430,7 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
             hooks: [
               {
                 type: "command",
-                command: `node "${relay}" --event PostToolUse`,
+                command: `"${nodeBin}" "${relay}" --event PostToolUse`,
               },
             ],
           },
@@ -437,7 +438,7 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
         Stop: [
           {
             type: "command",
-            command: `node "${relay}" --event Stop`,
+            command: `"${nodeBin}" "${relay}" --event Stop`,
           },
         ],
       };
