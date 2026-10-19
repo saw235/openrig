@@ -2648,6 +2648,16 @@ export class SessionTransport {
       });
     }
 
+    // Asynchronously mirror message to Antigravity IDE if the seat is linked
+    try {
+      import("../adapters/antigravity-agentapi-mirror.js").then(({ AntigravityAgentApiMirror }) => {
+        const mirror = new AntigravityAgentApiMirror();
+        mirror.sendMessage(sessionName, text).catch(() => {});
+      }).catch(() => {});
+    } catch {
+      // best-effort
+    }
+
     // 4. Wait 200ms (spike-proven delay)
     await this.sleep(200);
 

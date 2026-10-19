@@ -611,7 +611,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "ui.preview.max_pins": return 4;
     case "ui.preview.default_lines": return 50;
     case "ui.timezone": return "America/Los_Angeles";
-    case "ui.enabled": return true;
+    case "ui.enabled": return false;
     case "recovery.auto_drive_provider_prompts": return false;
     case "recovery.provider_auth_env_allowlist": return "";
     // V1 Phase 4 — Advisor default per universal-shell.md L83;

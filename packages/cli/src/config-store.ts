@@ -268,7 +268,7 @@ const DEFAULTS = {
   files: { allowlist: "" },
   progress: { scanRoots: "" },
   ui: {
-    enabled: true,
+    enabled: false,
     timezone: "America/Los_Angeles",
     preview: {
       refreshIntervalSeconds: 3,

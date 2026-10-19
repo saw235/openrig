@@ -13,6 +13,8 @@ export interface UiDeps {
 export const UI_DISABLED_GUIDANCE =
   "The OpenRig web UI is off on this daemon. To turn it on, run `rig config set ui.enabled true`, then stop and start the daemon (`rig daemon stop`, `rig daemon start`).";
 
+export const UI_MAINTENANCE_NOTICE =
+  "The OpenRig UI is experimental and in maintenance mode. It is not under active development; support is best-effort. The CLI is the primary supported interface. Contributions welcome.";
 export async function openBrowserUrl(
   url: string,
   exec?: (cmd: string, args: string[]) => Promise<void>,
@@ -71,14 +73,15 @@ export function uiCommand(depsOverride?: UiDeps): Command {
     .command("open")
     .description("Open the OpenRig UI in the default browser")
     .action(async () => {
+      console.error(UI_MAINTENANCE_NOTICE);
       const deps = getDeps();
 
       // Explicit override skips daemon status entirely (dev workflow with Vite)
       const overrideUrl = readOpenRigEnv("OPENRIG_UI_URL", "RIGGED_UI_URL")?.trim();
       if (overrideUrl) {
-        console.log(`OpenRig Studio: ${overrideUrl}`);
+        console.log(overrideUrl);
         try {
-          await openBrowserUrl(overrideUrl, deps.exec);
+          await deps.exec("open", [overrideUrl]);
         } catch {
           console.error("Failed to open browser — open the URL manually");
           process.exitCode = 1;
@@ -103,10 +106,10 @@ export function uiCommand(depsOverride?: UiDeps): Command {
       } catch {
         // No answer: open the URL as before; the browser shows whatever the daemon serves.
       }
-      console.log(`OpenRig Studio: ${url}`);
+      console.log(url);
 
       try {
-        await openBrowserUrl(url, deps.exec);
+        await deps.exec("open", [url]);
       } catch {
         console.error("Failed to open browser — open the URL manually");
         process.exitCode = 1;

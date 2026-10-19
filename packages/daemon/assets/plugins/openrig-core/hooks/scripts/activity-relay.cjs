@@ -168,15 +168,9 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
     providerPayload.hookEvent, providerPayload.hookEventName,
     providerPayload.hook_event_name, providerPayload.event, providerPayload.eventName
   );
-  const isStartOrInvocation = !hookEvent || [
-    "sessionstart",
-    "preinvocation",
-    "postinvocation",
-    "pretooluse",
-    "posttooluse",
-    "stop"
-  ].includes(hookEvent.toLowerCase());
-  if (!isStartOrInvocation) return null;
+  const ev = (hookEvent || "").toLowerCase();
+  const isStart = ev === "sessionstart" || ev === "preinvocation";
+  if (!isStart) return null;
 
   const sessionId = firstString(
     providerPayload.session_id,

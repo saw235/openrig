@@ -72,7 +72,7 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     this.home = deps.antigravityHome;
     this.binary = deps.binary ?? "agy";
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.defaultModel = deps.defaultModel;
+    this.defaultModel = deps.defaultModel ?? "gemini-3.8-flash-medium";
     this.activityRelayPath = deps.activityRelayPath;
     this.configProjectsDir = deps.configProjectsDir ?? nodePath.join(os.homedir(), ".gemini", "config", "projects");
   }
@@ -138,6 +138,14 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
             const submit = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
             if (!submit.ok) throw new Error(submit.message);
           }
+          // Asynchronously mirror startup prompt to Antigravity IDE conversation
+          try {
+            const { AntigravityAgentApiMirror } = await import("./antigravity-agentapi-mirror.js");
+            const mirror = new AntigravityAgentApiMirror({ configProjectsDir: this.configProjectsDir });
+            mirror.sendMessage(binding.tmuxSession, content).catch(() => {});
+          } catch {
+            // best-effort
+          }
         }
         delivered++;
       } catch (err) {
@@ -196,6 +204,22 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
         evidence: pane.split("\n").slice(-12).join("\n"),
       };
     }
+    // Asynchronously ensure a mirrored conversation in Antigravity IDE
+    try {
+      const { AntigravityAgentApiMirror } = await import("./antigravity-agentapi-mirror.js");
+      const mirror = new AntigravityAgentApiMirror({ configProjectsDir: this.configProjectsDir });
+      mirror.ensureConversation(binding.tmuxSession, {
+        rig: podName,
+        pod: podName,
+        role: opts.name,
+        cwd: binding.cwd,
+        model,
+        prompt: `OpenRig agent online: ${opts.name || binding.tmuxSession}\nSession: ${binding.tmuxSession}\nRig/Pod: ${podName}\nRole: ${opts.name}\nDirectory: ${binding.cwd}\nReady for interaction and task dispatch.`
+      }).catch(() => {});
+    } catch {
+      // best-effort
+    }
+
     if (opts.resumeToken) return { ok: true, resumeToken: opts.resumeToken, resumeType: "antigravity_id" };
     // A fresh conversation's database is created lazily; capture it if it already exists.
     const created = await this.captureNewConversation(before);

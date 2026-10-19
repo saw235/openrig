@@ -28,6 +28,7 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
   it("checks assignment, subshell/export and sourced-file alias/function effects", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-shell-forms-"));
     const rc = path.join(root, "bashrc"), script = path.join(root, "launch");
+    fs.writeFileSync(path.join(root, ".hushlogin"), "");
     const effects: Record<string, string> = {};
     try {
       for (const shape of ["alias", "function"]) {
