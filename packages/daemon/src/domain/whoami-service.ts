@@ -172,20 +172,30 @@ export class WhoamiService {
 
       if (sessionRows.length === 0) return null;
 
-      // Check distinct rigs
-      const rigIds = new Set<string>();
+      // Check distinct rigs, preferring active (non-archived) rigs over archived history
+      const activeRows: Array<{ session: SessionRow; rigId: string }> = [];
+      const archivedRows: Array<{ session: SessionRow; rigId: string }> = [];
       for (const sess of sessionRows) {
         const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node) rigIds.add(node.rig_id);
+        if (node) {
+          const rigRow = this.db.prepare("SELECT archived_at FROM rigs WHERE id = ?").get(node.rig_id) as { archived_at: string | null } | undefined;
+          if (rigRow && rigRow.archived_at === null) {
+            activeRows.push({ session: sess, rigId: node.rig_id });
+          } else {
+            archivedRows.push({ session: sess, rigId: node.rig_id });
+          }
+        }
       }
 
-      if (rigIds.size > 1) {
+      const candidateRows = activeRows.length > 0 ? activeRows : archivedRows;
+      const candidateRigIds = new Set(candidateRows.map((r) => r.rigId));
+      if (candidateRigIds.size > 1) {
         throw new WhoamiAmbiguousError(
-          `Session '${query.sessionName}' is ambiguous — found in ${rigIds.size} rigs. Use --node-id instead.`
+          `Session '${query.sessionName}' is ambiguous — found in ${candidateRigIds.size} rigs. Use --node-id instead.`
         );
       }
 
-      const sess = sessionRows[0]!;
+      const sess = candidateRows[0]!.session;
       nodeRow = this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(sess.node_id) as NodeRow | undefined;
       if (!nodeRow) return null;
       resolvedBy = "session_name";

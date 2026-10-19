@@ -534,6 +534,146 @@ export function renderSidecarHtml(daemonUrl: string): string {
       border-top: 1px solid var(--border-subtle);
     }
 
+    .modal-wide {
+      max-width: 860px;
+      width: 92vw;
+    }
+
+    /* Fleet Telemetry Dashboard Bar */
+    .telemetry-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .telemetry-stat-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .telemetry-stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .telemetry-stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #ffffff;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .telemetry-stat-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Terminal snapshot modal styling */
+    .capture-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .form-select {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      padding: 4px 8px;
+      font-size: 11.5px;
+      outline: none;
+    }
+
+    .auto-refresh-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .terminal-container {
+      background-color: #0d0d0d;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .terminal-bar-top {
+      background-color: #161616;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 6px 12px;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .terminal-content {
+      padding: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #e6e6e6;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 460px;
+      overflow-y: auto;
+      background-color: #0d0d0d;
+    }
+
+    .btn-secondary {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+    }
+    .btn-secondary:hover {
+      background-color: var(--bg-elevated);
+      border-color: var(--border-focus);
+    }
+
+    .token-progress-container {
+      background-color: var(--bg-card);
+      border-radius: var(--radius-full);
+      height: 4px;
+      width: 100%;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .token-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+      border-radius: var(--radius-full);
+      transition: width 0.3s ease;
+    }
+
+    .seat-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
     /* Toast notification */
     #toast {
       position: fixed;
@@ -624,6 +764,34 @@ export function renderSidecarHtml(daemonUrl: string): string {
           <span class="badge badge-blue" id="topology-header-badge">Live</span>
         </div>
       </div>
+
+      <!-- Fleet Telemetry Dashboard Bar -->
+      <div id="fleet-telemetry-bar" class="telemetry-bar">
+        <div class="telemetry-stat-card">
+          <div class="telemetry-stat-label">Active Seats</div>
+          <div class="telemetry-stat-value" id="telem-active-seats">0 / 0</div>
+          <div class="telemetry-stat-sub" id="telem-runtimes">Google Antigravity Fleet</div>
+        </div>
+        <div class="telemetry-stat-card">
+          <div class="telemetry-stat-label">Token Burn Rate</div>
+          <div class="telemetry-stat-value" id="telem-burn-rate">0 tok/hr</div>
+          <div class="telemetry-stat-sub" id="telem-cost">Est. Cost: $0.00</div>
+        </div>
+        <div class="telemetry-stat-card">
+          <div class="telemetry-stat-label">Top Consuming Seat</div>
+          <div class="telemetry-stat-value" id="telem-top-seat">—</div>
+          <div class="telemetry-stat-sub" id="telem-top-detail">No active burn</div>
+        </div>
+        <div class="telemetry-stat-card">
+          <div class="telemetry-stat-label">Telemetry Ingest</div>
+          <div class="telemetry-stat-value" style="display:flex; align-items:center; gap:6px;">
+            <div class="live-dot working"></div>
+            <span>Active</span>
+          </div>
+          <div class="telemetry-stat-sub">Streaming (OpenRig Daemon)</div>
+        </div>
+      </div>
+
       <div id="topology-list">
         <div class="empty-state">Loading agent topology...</div>
       </div>
@@ -716,6 +884,59 @@ export function renderSidecarHtml(daemonUrl: string): string {
       <div class="modal-footer">
         <button class="btn" onclick="closeModal('proof-reject-modal')">Cancel</button>
         <button class="btn btn-danger" id="confirm-proof-reject-btn">Reject Proof</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN CAPTURE MODAL -->
+  <div class="modal-overlay" id="capture-modal">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="badge badge-blue">TERMINAL</div>
+          <div>
+            <div class="modal-title" id="capture-modal-title">Live Terminal Snapshot</div>
+            <div class="card-meta" id="capture-modal-subtitle" style="margin-top:2px; font-size:11px;">Target: —</div>
+          </div>
+        </div>
+        <button class="modal-close" onclick="closeCaptureModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="capture-toolbar">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <label class="form-label" style="margin:0;">Lines:</label>
+            <select id="capture-lines-select" class="form-select" onchange="changeCaptureLines(this.value)">
+              <option value="30">30 lines</option>
+              <option value="50" selected>50 lines</option>
+              <option value="100">100 lines</option>
+              <option value="200">200 lines</option>
+            </select>
+            <label class="auto-refresh-label">
+              <input type="checkbox" id="capture-autorefresh" checked onchange="toggleCaptureAutoRefresh(this.checked)">
+              <span>Auto-refresh (3s)</span>
+            </label>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <button class="btn" onclick="refreshCurrentCapture()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+              <span>Refresh</span>
+            </button>
+            <button class="btn btn-primary" onclick="copyCaptureText()">
+              📋 Copy Screen
+            </button>
+          </div>
+        </div>
+        <div class="terminal-container">
+          <div class="terminal-bar-top">
+            <span id="capture-status-line">Connecting to live pane...</span>
+            <span id="capture-timestamp">—</span>
+          </div>
+          <pre id="capture-terminal-content" class="terminal-content">Loading screen capture...</pre>
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between;">
+        <span class="card-meta" style="font-size:11px;">Direct socket via OpenRig /api/transport/capture (Obsidian Terminal View)</span>
+        <button class="btn" onclick="closeCaptureModal()">Close</button>
       </div>
     </div>
   </div>
@@ -998,14 +1219,156 @@ export function renderSidecarHtml(daemonUrl: string): string {
       }
     }
 
-    // Fetch Topology
+    function stripAnsi(str) {
+      if (!str) return '';
+      return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+    }
+
+    function formatTokens(n) {
+      if (n == null || isNaN(n)) return '0';
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+      return String(n);
+    }
+
+    let currentCaptureSession = null;
+    let currentCaptureLogicalId = null;
+    let captureAutoRefreshInterval = null;
+    let captureLines = 50;
+
+    async function openCaptureModal(sessionName, logicalId) {
+      currentCaptureSession = sessionName;
+      currentCaptureLogicalId = logicalId || sessionName;
+      document.getElementById('capture-modal-title').textContent = 'Live Terminal Snapshot: ' + currentCaptureLogicalId;
+      document.getElementById('capture-modal-subtitle').textContent = 'Target Session: ' + sessionName;
+      document.getElementById('capture-status-line').textContent = 'Connecting to live pane snapshot...';
+      document.getElementById('capture-terminal-content').textContent = 'Fetching screen from ' + sessionName + '...';
+      openModal('capture-modal');
+
+      await refreshCurrentCapture();
+
+      const autoCheckbox = document.getElementById('capture-autorefresh');
+      if (autoCheckbox && autoCheckbox.checked) {
+        startCaptureAutoRefresh();
+      }
+    }
+
+    function closeCaptureModal() {
+      closeModal('capture-modal');
+      stopCaptureAutoRefresh();
+      currentCaptureSession = null;
+      currentCaptureLogicalId = null;
+    }
+
+    function startCaptureAutoRefresh() {
+      stopCaptureAutoRefresh();
+      captureAutoRefreshInterval = setInterval(() => {
+        if (currentCaptureSession && document.getElementById('capture-modal').classList.contains('open')) {
+          refreshCurrentCapture(true);
+        } else {
+          stopCaptureAutoRefresh();
+        }
+      }, 3000);
+    }
+
+    function stopCaptureAutoRefresh() {
+      if (captureAutoRefreshInterval) {
+        clearInterval(captureAutoRefreshInterval);
+        captureAutoRefreshInterval = null;
+      }
+    }
+
+    function toggleCaptureAutoRefresh(enabled) {
+      if (enabled) {
+        startCaptureAutoRefresh();
+      } else {
+        stopCaptureAutoRefresh();
+      }
+    }
+
+    function changeCaptureLines(lines) {
+      captureLines = Number(lines) || 50;
+      refreshCurrentCapture();
+    }
+
+    async function refreshCurrentCapture(isSilent = false) {
+      if (!currentCaptureSession) return;
+      const statusEl = document.getElementById('capture-status-line');
+      const timeEl = document.getElementById('capture-timestamp');
+      const contentEl = document.getElementById('capture-terminal-content');
+
+      if (!isSilent) {
+        statusEl.textContent = 'Querying /api/transport/capture...';
+      }
+
+      try {
+        const res = await fetch('/api/transport/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: currentCaptureSession, lines: captureLines })
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          const clean = stripAnsi(data.content || '');
+          contentEl.textContent = clean || '(Terminal pane is currently blank / waiting for prompt)';
+          statusEl.textContent = '● Live connected (' + (data.lines || captureLines) + ' lines)';
+          statusEl.style.color = 'var(--accent-green)';
+          timeEl.textContent = new Date().toLocaleTimeString();
+        } else {
+          contentEl.textContent = 'Unable to capture pane: ' + (data.message || data.error || ('HTTP ' + res.status));
+          statusEl.textContent = '▲ Capture unavailable';
+          statusEl.style.color = 'var(--accent-amber)';
+          timeEl.textContent = new Date().toLocaleTimeString();
+        }
+      } catch (err) {
+        contentEl.textContent = 'Error connecting to daemon capture endpoint: ' + err.message;
+        statusEl.textContent = '✕ Connection error';
+        statusEl.style.color = 'var(--accent-red)';
+        timeEl.textContent = new Date().toLocaleTimeString();
+      }
+    }
+
+    function copyCaptureText() {
+      const contentEl = document.getElementById('capture-terminal-content');
+      if (contentEl && contentEl.textContent) {
+        copyToClipboard(contentEl.textContent);
+      }
+    }
+
+    // Fetch Topology & Telemetry
     async function fetchTopology() {
       try {
-        const resRigs = await fetch('/api/rigs');
-        const rigsList = await resRigs.json();
+        const [resRigs, resTelemCost, resTelemTop] = await Promise.allSettled([
+          fetch('/api/rigs'),
+          fetch('/api/telemetry/usage/cost'),
+          fetch('/api/telemetry/usage/top?window_hours=1')
+        ]);
+
+        let rigsList = [];
+        if (resRigs.status === 'fulfilled' && resRigs.value.ok) {
+          rigsList = await resRigs.value.json();
+        }
         const rigs = Array.isArray(rigsList) ? rigsList : (rigsList.rigs || []);
 
+        let costData = null;
+        if (resTelemCost.status === 'fulfilled' && resTelemCost.value.ok) {
+          try { costData = await resTelemCost.value.json(); } catch(e) {}
+        }
+        let topData = null;
+        if (resTelemTop.status === 'fulfilled' && resTelemTop.value.ok) {
+          try { topData = await resTelemTop.value.json(); } catch(e) {}
+        }
+
+        const seatUsageMap = {};
+        if (costData && Array.isArray(costData.seats)) {
+          for (const s of costData.seats) {
+            if (s.seat) seatUsageMap[s.seat] = s;
+          }
+        }
+
         let totalSeats = 0;
+        let activeSeats = 0;
+        let totalFleetTokens = 0;
         let html = '';
 
         for (const r of rigs) {
@@ -1058,7 +1421,20 @@ export function renderSidecarHtml(daemonUrl: string): string {
               const isAgy = runtime.toLowerCase().includes('antigravity');
               const disp = (node.activityState && node.activityState.display) || node.sessionStatus || 'idle';
               const state = disp === 'working' ? 'working' : (disp === 'needs_input' || disp === 'attention_required') ? 'needs_input' : 'idle';
+              if (state === 'working') activeSeats++;
+
               const convId = (node.resumeType === 'antigravity_id' ? node.resumeToken : null) || node.resumeToken;
+
+              // Context & Token Telemetry
+              const ctx = node.contextUsage;
+              const hasCtx = ctx && ctx.availability === 'available' && ctx.usedPercentage != null;
+              const usedPct = hasCtx ? Math.min(100, Math.round(ctx.usedPercentage)) : null;
+              const inTok = ctx && ctx.totalInputTokens != null ? ctx.totalInputTokens : 0;
+              const outTok = ctx && ctx.totalOutputTokens != null ? ctx.totalOutputTokens : 0;
+              const seatTokens = inTok + outTok;
+              totalFleetTokens += seatTokens;
+
+              const usageRecord = seatUsageMap[sessionName] || seatUsageMap[node.logicalId];
 
               html += \`
                 <div class="seat-item">
@@ -1074,16 +1450,32 @@ export function renderSidecarHtml(daemonUrl: string): string {
                   <div class="seat-details">
                     \${node.model ? \`<span class="badge badge-muted">Model: \${escapeHtml(node.model)}</span>\` : ''}
                     \${node.effort ? \`<span class="badge badge-muted">Effort: \${escapeHtml(node.effort)}</span>\` : ''}
+                    \${hasCtx ? \`
+                      <span class="badge badge-blue">Context: \${usedPct}%</span>
+                      <span class="badge badge-muted">Tokens: \${formatTokens(seatTokens)}</span>
+                    \` : usageRecord ? \`
+                      <span class="badge badge-blue">Burn: \${formatTokens(usageRecord.tokens || 0)} tok</span>
+                    \` : \`
+                      <span class="badge badge-muted">Tokens: idle</span>
+                    \`}
                   </div>
+                  \${hasCtx ? \`
+                    <div class="token-progress-container" title="Context Window Usage: \${usedPct}% (\${formatTokens(inTok)} in / \${formatTokens(outTok)} out)">
+                      <div class="token-progress-fill" style="width: \${usedPct}%"></div>
+                    </div>
+                  \` : ''}
                   \${convId ? \`
                     <div class="conv-box">
                       <span>Conv: \${escapeHtml(convId.slice(0, 18))}...</span>
                       <button class="conv-copy-btn" onclick="copyToClipboard('\${convId}')">Copy ID</button>
                     </div>
                   \` : ''}
-                  <div style="margin-top:4px; display:flex; justify-content:flex-end;">
-                    <button class="btn btn-primary" style="padding:2px 8px; font-size:11px;" onclick="openReplyModal('\${sessionName}')">
-                      Message
+                  <div class="seat-actions">
+                    <button class="btn btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="openCaptureModal('\${escapeJs(sessionName)}', '\${escapeJs(node.logicalId)}')">
+                      📺 Screen
+                    </button>
+                    <button class="btn btn-primary" style="padding:2px 8px; font-size:11px;" onclick="openReplyModal('\${escapeJs(sessionName)}')">
+                      ✉ Message
                     </button>
                   </div>
                 </div>
@@ -1101,6 +1493,31 @@ export function renderSidecarHtml(daemonUrl: string): string {
 
         document.getElementById('seats-count').textContent = totalSeats;
         document.getElementById('topology-list').innerHTML = html || '<div class="empty-state">No rigs running. Launch a rig to populate topology.</div>';
+
+        // Update Fleet Telemetry Dashboard Bar
+        const activeSeatsEl = document.getElementById('telem-active-seats');
+        if (activeSeatsEl) activeSeatsEl.textContent = activeSeats + ' / ' + totalSeats;
+
+        const burnRateEl = document.getElementById('telem-burn-rate');
+        if (burnRateEl) {
+          burnRateEl.textContent = totalFleetTokens > 0 ? (formatTokens(totalFleetTokens) + ' tok') : '0 tok/hr';
+        }
+
+        const costEl = document.getElementById('telem-cost');
+        if (costEl && costData && costData.totalCostFormatted) {
+          costEl.textContent = 'Est. Cost: ' + costData.totalCostFormatted;
+        }
+
+        const topSeatEl = document.getElementById('telem-top-seat');
+        const topDetailEl = document.getElementById('telem-top-detail');
+        if (topSeatEl && topData && Array.isArray(topData.ranked) && topData.ranked.length > 0) {
+          const topRanked = topData.ranked[0];
+          topSeatEl.textContent = topRanked.seat || 'top-seat';
+          if (topDetailEl) topDetailEl.textContent = (formatTokens(topRanked.burn || topRanked.tokens || 0)) + ' tok in window';
+        } else if (topSeatEl) {
+          topSeatEl.textContent = totalSeats > 0 ? (activeSeats > 0 ? 'Fleet Active' : 'Fleet Standby') : '—';
+          if (topDetailEl) topDetailEl.textContent = activeSeats > 0 ? (activeSeats + ' seats working') : 'All seats idle';
+        }
       } catch (err) {
         console.error("fetchTopology error:", err);
       }
