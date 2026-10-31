@@ -994,8 +994,8 @@ export function renderSidecarHtml(daemonUrl: string): string {
       color: var(--accent-blue);
     }
     #topology-graph-viewport {
-      overflow: auto;
-      max-height: 700px;
+      overflow-x: auto;
+      overflow-y: visible;
       min-height: 430px;
       padding: 16px;
       cursor: grab;
@@ -1534,6 +1534,7 @@ export function renderSidecarHtml(daemonUrl: string): string {
 
   <div id="toast"></div>
 
+  <script src="/vendor/dagre.min.js"></script>
   <script>
     // Tab switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2475,14 +2476,96 @@ export function renderSidecarHtml(daemonUrl: string): string {
       const totalSeatsCount = Object.keys(graphSeatRegistry).length;
       inspector.innerHTML =
         '<div class="inspector-hint">' +
-          '<span>☊ <strong>Interactive Fleet Graph:</strong> Showing <strong>' + totalSeatsCount + ' seats</strong> and <strong>' + allRenderedEdges.length + ' directed seat edges</strong>. Click any <strong>Rig Hub</strong> or <strong>Seat Node</strong> to highlight causal paths &amp; actions.</span>' +
+          '<span>☊ <strong>Dagre Top-Down Fleet Graph:</strong> Showing <strong>' + totalSeatsCount + ' seats</strong> and <strong>' + allRenderedEdges.length + ' directed seat edges</strong>. Click any <strong>Rig Hub</strong> or <strong>Seat Node</strong> to highlight causal paths &amp; actions.</span>' +
         '</div>';
+    }
+
+    let graphRigHubRegistry = {};
+
+    // Uniform cubic B-spline (d3.curveBasis) converter for Dagre multi-point routed edge polylines
+    function dagrePointsToSvgPath(points) {
+      if (!points || points.length === 0) return '';
+      if (points.length === 1) return 'M ' + points[0].x.toFixed(1) + ' ' + points[0].y.toFixed(1);
+      if (points.length === 2) {
+        return 'M ' + points[0].x.toFixed(1) + ' ' + points[0].y.toFixed(1) +
+               ' L ' + points[1].x.toFixed(1) + ' ' + points[1].y.toFixed(1);
+      }
+      const n = points.length;
+      let d = 'M ' + points[0].x.toFixed(1) + ' ' + points[0].y.toFixed(1) +
+              ' L ' + ((5 * points[0].x + points[1].x) / 6).toFixed(1) + ' ' + ((5 * points[0].y + points[1].y) / 6).toFixed(1);
+      for (let i = 2; i < n; i++) {
+        const p0 = points[i - 2];
+        const p1 = points[i - 1];
+        const p2 = points[i];
+        const c1x = (2 * p0.x + p1.x) / 3;
+        const c1y = (2 * p0.y + p1.y) / 3;
+        const c2x = (p0.x + 2 * p1.x) / 3;
+        const c2y = (p0.y + 2 * p1.y) / 3;
+        const ex = (p0.x + 4 * p1.x + p2.x) / 6;
+        const ey = (p0.y + 4 * p1.y + p2.y) / 6;
+        d += ' C ' + c1x.toFixed(1) + ' ' + c1y.toFixed(1) + ', ' + c2x.toFixed(1) + ' ' + c2y.toFixed(1) + ', ' + ex.toFixed(1) + ' ' + ey.toFixed(1);
+      }
+      const prev = points[n - 2];
+      const last = points[n - 1];
+      d += ' C ' + ((2 * prev.x + last.x) / 3).toFixed(1) + ' ' + ((2 * prev.y + last.y) / 3).toFixed(1) +
+           ', ' + ((prev.x + 2 * last.x) / 3).toFixed(1) + ' ' + ((prev.y + 2 * last.y) / 3).toFixed(1) +
+           ', ' + ((prev.x + 5 * last.x) / 6).toFixed(1) + ' ' + ((prev.y + 5 * last.y) / 6).toFixed(1) +
+           ' L ' + last.x.toFixed(1) + ' ' + last.y.toFixed(1);
+      return d;
+    }
+
+    function dagrePolylineMidpoint(points) {
+      if (!points || points.length === 0) return { x: 0, y: 0 };
+      if (points.length === 1) return points[0];
+      let totalLen = 0;
+      const segLens = [];
+      for (let i = 0; i < points.length - 1; i++) {
+        const len = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+        segLens.push(len);
+        totalLen += len;
+      }
+      let target = totalLen * 0.5;
+      for (let i = 0; i < segLens.length; i++) {
+        if (target <= segLens[i] || i === segLens.length - 1) {
+          const t = segLens[i] > 0.001 ? (target / segLens[i]) : 0.5;
+          return {
+            x: points[i].x + t * (points[i + 1].x - points[i].x),
+            y: points[i].y + t * (points[i + 1].y - points[i].y)
+          };
+        }
+        target -= segLens[i];
+      }
+      return points[Math.floor(points.length / 2)];
+    }
+
+    function clipPolylineAtPodTop(points, podTopY) {
+      if (!points || points.length < 2) return points;
+      const targetY = podTopY - 3;
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        if (a.y <= targetY && b.y >= targetY) {
+          const dy = b.y - a.y;
+          const t = dy > 0.001 ? ((targetY - a.y) / dy) : 1;
+          const ix = a.x + t * (b.x - a.x);
+          return points.slice(0, i + 1).concat([{ x: ix, y: targetY }]);
+        }
+      }
+      return points;
     }
 
     function renderSvgGraph() {
       initGraphViewportPanZoom();
       const stage = document.getElementById('topology-graph-stage') || document.getElementById('topology-graph-container');
       if (!stage || !cachedTopology) return;
+
+      const dagreLib = (typeof window !== 'undefined' && window.dagre) ||
+                       (typeof globalThis !== 'undefined' && globalThis.dagre) ||
+                       (typeof dagre !== 'undefined' ? dagre : null);
+      if (!dagreLib || !dagreLib.graphlib || typeof dagreLib.layout !== 'function') {
+        stage.innerHTML = '<div class="empty-state">Dagre layout engine is still loading…</div>';
+        return;
+      }
 
       const { rigs } = cachedTopology;
       const rigFilter = document.getElementById('topology-rig-filter')?.value || 'all';
@@ -2501,25 +2584,24 @@ export function renderSidecarHtml(daemonUrl: string): string {
       if (filteredRigs.length === 0) {
         stage.innerHTML = '<div class="empty-state">No rigs match the current filter or search criteria.</div>';
         graphSeatRegistry = {};
+        graphRigHubRegistry = {};
         updateGraphInspector([]);
         return;
       }
 
-      const rigHubX = 24;
-      const rigHubW = 204;
-      const rigHubH = 98;
-      const podsStartX = 288;
-      const cardW = 228;
+      const rigHubW = 252;
+      const rigHubH = 88;
+      const cardW = 236;
       const cardH = 84;
-      const seatColGap = 54;
       const podPadX = 16;
       const podPadTop = 32;
       const podPadBottom = 14;
-      const podGapX = 56;
-      const podGapY = 34;
-      const rigSectionGap = 36;
+      const rigPadTop = 22;
+      const rigPadBottom = 24;
+      const rigSectionGap = 32;
 
       graphSeatRegistry = {};
+      graphRigHubRegistry = {};
       const allRenderedEdges = [];
 
       const defs = '<defs>' +
@@ -2540,10 +2622,9 @@ export function renderSidecarHtml(daemonUrl: string): string {
         '</marker>' +
       '</defs>';
 
-      // Pre-compute layout for all rigs so we know neighborhood highlights before emitting SVG
-      const rigLayouts = [];
-      let totalWidth = 1020;
-      let currentY = 20;
+      // Pass 1: Run open-source Dagre compound Sugiyama top-down (TB) layout per rig
+      const rawRigGraphs = [];
+      let maxRigContentW = rigHubW;
 
       for (const r of filteredRigs) {
         const rig = r.rig || r;
@@ -2561,237 +2642,299 @@ export function renderSidecarHtml(daemonUrl: string): string {
           if (n.logicalId) nodeById[n.logicalId] = n;
         }
 
-        // Group nodes into pods
+        // Group seats into pods, ordered by role rank for deterministic Dagre tie-breaking
         const podMap = {};
         for (const n of nodes) {
           const podName = n.podNamespace || (n.logicalId ? n.logicalId.split('.')[0] : '') || 'default';
           if (!podMap[podName]) podMap[podName] = [];
           podMap[podName].push(n);
         }
-
-        // Sort nodes inside each pod topologically by intra-pod delegates_to edges, then role rank
-        const podEntries = [];
-        for (const [podName, pNodes] of Object.entries(podMap)) {
-          const pIds = new Set(pNodes.map(n => getNodeKeyId(n)));
-          const inDeg = {};
-          const adj = {};
-          for (const n of pNodes) {
-            const k = getNodeKeyId(n);
-            inDeg[k] = 0;
-            adj[k] = [];
-          }
-          for (const e of rigEdgesRaw) {
-            if (e.kind !== 'delegates_to') continue;
-            const sNode = nodeById[e.sourceId];
-            const tNode = nodeById[e.targetId];
-            if (!sNode || !tNode) continue;
-            const sk = getNodeKeyId(sNode);
-            const tk = getNodeKeyId(tNode);
-            if (sk !== tk && pIds.has(sk) && pIds.has(tk)) {
-              adj[sk].push(tk);
-              inDeg[tk] = (inDeg[tk] || 0) + 1;
-            }
-          }
-
-          const remaining = [...pNodes].sort((a, b) => getNodeRoleRank(a.logicalId) - getNodeRoleRank(b.logicalId));
-          const ordered = [];
-          const visited = new Set();
-          while (ordered.length < pNodes.length) {
-            let pickIdx = remaining.findIndex(n => !visited.has(getNodeKeyId(n)) && (inDeg[getNodeKeyId(n)] || 0) <= 0);
-            if (pickIdx === -1) {
-              pickIdx = remaining.findIndex(n => !visited.has(getNodeKeyId(n)));
-            }
-            const picked = remaining[pickIdx];
-            const pk = getNodeKeyId(picked);
-            visited.add(pk);
-            ordered.push(picked);
-            for (const nxt of (adj[pk] || [])) {
-              inDeg[nxt] = (inDeg[nxt] || 0) - 1;
-            }
-          }
-
-          const podW = ordered.length * cardW + Math.max(0, ordered.length - 1) * seatColGap + podPadX * 2;
-          const podH = cardH + podPadTop + podPadBottom;
-          podEntries.push({ podName, nodes: ordered, w: podW, h: podH, tier: 0, x: 0, y: 0 });
+        const podNames = Object.keys(podMap);
+        for (const pn of podNames) {
+          podMap[pn].sort((a, b) => getNodeRoleRank(a.logicalId) - getNodeRoleRank(b.logicalId));
         }
 
-        // Compute topological pod tiers using cross-pod delegates_to edges
-        const podByName = {};
-        const podInDeg = {};
-        const podAdj = {};
-        for (const p of podEntries) {
-          podByName[p.podName] = p;
-          podInDeg[p.podName] = 0;
-          podAdj[p.podName] = new Set();
-        }
+        // Resolve valid directed edges (or infer sequential intra-pod pipeline if 0 explicit edges)
+        const pendingEdges = [];
+        const seenEdgeKeys = new Set();
         for (const e of rigEdgesRaw) {
-          if (e.kind !== 'delegates_to') continue;
           const sNode = nodeById[e.sourceId];
           const tNode = nodeById[e.targetId];
           if (!sNode || !tNode) continue;
-          const sp = sNode.podNamespace || (sNode.logicalId ? sNode.logicalId.split('.')[0] : '') || 'default';
-          const tp = tNode.podNamespace || (tNode.logicalId ? tNode.logicalId.split('.')[0] : '') || 'default';
-          if (sp !== tp && podByName[sp] && podByName[tp] && !podAdj[sp].has(tp)) {
-            podAdj[sp].add(tp);
-            podInDeg[tp] = (podInDeg[tp] || 0) + 1;
-          }
-        }
-
-        const topoPods = [];
-        const visitedPods = new Set();
-        while (topoPods.length < podEntries.length) {
-          let nextPod = podEntries.find(p => !visitedPods.has(p.podName) && (podInDeg[p.podName] || 0) <= 0);
-          if (!nextPod) {
-            nextPod = podEntries.find(p => !visitedPods.has(p.podName));
-          }
-          visitedPods.add(nextPod.podName);
-          topoPods.push(nextPod);
-          for (const targetPodName of podAdj[nextPod.podName]) {
-            const targetPod = podByName[targetPodName];
-            if (targetPod && !visitedPods.has(targetPodName)) {
-              targetPod.tier = Math.max(targetPod.tier, nextPod.tier + 1);
-            }
-            podInDeg[targetPodName] = (podInDeg[targetPodName] || 0) - 1;
-          }
-        }
-
-        // Decide horizontal tier columns vs packed topological rows
-        const tiersMap = {};
-        for (const p of topoPods) {
-          if (!tiersMap[p.tier]) tiersMap[p.tier] = [];
-          tiersMap[p.tier].push(p);
-        }
-        const tierKeys = Object.keys(tiersMap).map(Number).sort((a, b) => a - b);
-        let horizontalSeatsSum = 0;
-        for (const tk of tierKeys) {
-          horizontalSeatsSum += Math.max(...tiersMap[tk].map(p => p.nodes.length));
-        }
-
-        const rigContentTop = currentY + 18;
-        let rigContentBottom = rigContentTop;
-
-        if (horizontalSeatsSum <= 4) {
-          // Pure left-to-right DAG columns by Pod Tier (ideal for 2-5 seat rigs like openrig-dev, sidecar-dev, kernel)
-          let colX = podsStartX;
-          for (const tk of tierKeys) {
-            const tierPods = tiersMap[tk];
-            let tierY = rigContentTop;
-            let maxTierW = 0;
-            for (const p of tierPods) {
-              p.x = colX;
-              p.y = tierY;
-              tierY += p.h + podGapY;
-              if (p.w > maxTierW) maxTierW = p.w;
-              if (p.y + p.h > rigContentBottom) rigContentBottom = p.y + p.h;
-            }
-            colX += maxTierW + podGapX;
-            if (colX + 28 > totalWidth) totalWidth = colX + 28;
-          }
-        } else {
-          // Packed topological rows for large multi-pod rigs (e.g., 16-seat dnd-world)
-          const maxRowRight = podsStartX + 1060;
-          let rowX = podsStartX;
-          let rowY = rigContentTop;
-          let rowMaxH = 0;
-          for (const p of topoPods) {
-            if (rowX > podsStartX && rowX + p.w > maxRowRight) {
-              rowX = podsStartX;
-              rowY += rowMaxH + podGapY;
-              rowMaxH = 0;
-            }
-            p.x = rowX;
-            p.y = rowY;
-            rowX += p.w + podGapX;
-            if (p.h > rowMaxH) rowMaxH = p.h;
-            if (p.x + p.w + 28 > totalWidth) totalWidth = p.x + p.w + 28;
-            if (p.y + p.h > rigContentBottom) rigContentBottom = p.y + p.h;
-          }
-        }
-
-        const rigHeight = Math.max(rigHubH + 28, (rigContentBottom - currentY) + 18);
-        const rigHubY = currentY + Math.min(Math.max(14, (rigHeight - rigHubH) / 2), 160);
-
-        // Register seat coordinates
-        const rigSeatById = {};
-        for (const p of topoPods) {
-          p.seatBoxes = [];
-          for (let i = 0; i < p.nodes.length; i++) {
-            const node = p.nodes[i];
-            const sx = p.x + podPadX + i * (cardW + seatColGap);
-            const sy = p.y + podPadTop;
-            const nid = getNodeKeyId(node);
-            const seatKey = rig.name + '::' + nid;
-            const box = { key: seatKey, id: nid, node, rig, podName: p.podName, x: sx, y: sy, w: cardW, h: cardH };
-            p.seatBoxes.push(box);
-            graphSeatRegistry[seatKey] = box;
-            rigSeatById[nid] = box;
-            if (node.id) rigSeatById[node.id] = box;
-            if (node.nodeId) rigSeatById[node.nodeId] = box;
-            if (node.logicalId) rigSeatById[node.logicalId] = box;
-          }
-        }
-
-        // Resolve valid directed edges for this rig
-        const resolvedEdges = [];
-        const seenEdgeKeys = new Set();
-        for (const e of rigEdgesRaw) {
-          const srcBox = rigSeatById[e.sourceId];
-          const dstBox = rigSeatById[e.targetId];
-          if (!srcBox || !dstBox || srcBox.key === dstBox.key) continue;
+          const sId = getNodeKeyId(sNode);
+          const tId = getNodeKeyId(tNode);
+          if (sId === tId) continue;
           const kind = e.kind || 'delegates_to';
-          const dedup = srcBox.key + '->' + dstBox.key + ':' + kind;
+          const dedup = sId + '->' + tId + ':' + kind;
           if (seenEdgeKeys.has(dedup)) continue;
           seenEdgeKeys.add(dedup);
-          const edgeObj = {
-            rigName: rig.name,
-            sourceKey: srcBox.key,
-            targetKey: dstBox.key,
-            src: srcBox,
-            dst: dstBox,
-            kind
-          };
-          resolvedEdges.push(edgeObj);
-          allRenderedEdges.push(edgeObj);
+          const sPod = sNode.podNamespace || (sNode.logicalId ? sNode.logicalId.split('.')[0] : '') || 'default';
+          const tPod = tNode.podNamespace || (tNode.logicalId ? tNode.logicalId.split('.')[0] : '') || 'default';
+          pendingEdges.push({ sId, tId, sNode, tNode, sPod, tPod, kind, edgeId: dedup });
         }
 
-        // Fallback: if rig defines 0 explicit edges, infer intra-pod sequential pipeline edges so seats remain connected
         if (rigEdgesRaw.length === 0) {
-          for (const p of topoPods) {
-            for (let i = 0; i < p.seatBoxes.length - 1; i++) {
-              const edgeObj = {
-                rigName: rig.name,
-                sourceKey: p.seatBoxes[i].key,
-                targetKey: p.seatBoxes[i + 1].key,
-                src: p.seatBoxes[i],
-                dst: p.seatBoxes[i + 1],
-                kind: 'delegates_to'
-              };
-              resolvedEdges.push(edgeObj);
-              allRenderedEdges.push(edgeObj);
+          for (const pn of podNames) {
+            const pNodes = podMap[pn];
+            for (let i = 0; i < pNodes.length - 1; i++) {
+              const sId = getNodeKeyId(pNodes[i]);
+              const tId = getNodeKeyId(pNodes[i + 1]);
+              const dedup = sId + '->' + tId + ':delegates_to';
+              pendingEdges.push({ sId, tId, sNode: pNodes[i], tNode: pNodes[i + 1], sPod: pn, tPod: pn, kind: 'delegates_to', edgeId: dedup });
             }
           }
+        }
+
+        // Build Dagre Compound Multigraph (rankdir: 'TB' -> Rig Hub at Top, Pods & Seats Flowing Top-to-Bottom)
+        const g = new dagreLib.graphlib.Graph({ compound: true, multigraph: true });
+        g.setGraph({
+          rankdir: 'TB',
+          nodesep: 34,
+          ranksep: 52,
+          edgesep: 14,
+          marginx: 16,
+          marginy: 16
+        });
+        g.setDefaultEdgeLabel(function() { return {}; });
+
+        const hubNodeId = '__rig_hub__';
+        g.setNode(hubNodeId, { width: rigHubW, height: rigHubH });
+
+        const delegatesInDeg = {};
+        for (const pn of podNames) {
+          const podClusterId = 'pod::' + pn;
+          g.setNode(podClusterId, { label: pn, clusterLabelPos: 'top' });
+          for (const n of podMap[pn]) {
+            const nid = getNodeKeyId(n);
+            delegatesInDeg[nid] = 0;
+            g.setNode(nid, { width: cardW, height: cardH });
+            g.setParent(nid, podClusterId);
+          }
+        }
+
+        for (const pe of pendingEdges) {
+          if (pe.kind === 'delegates_to' && delegatesInDeg[pe.tId] !== undefined) {
+            delegatesInDeg[pe.tId]++;
+          }
+        }
+
+        // Connect Rig Hub (Rank 0 at top) to all root entry seats (delegates_to in-degree === 0)
+        const rootSeatIds = [];
+        for (const pn of podNames) {
+          for (const n of podMap[pn]) {
+            const nid = getNodeKeyId(n);
+            if ((delegatesInDeg[nid] || 0) === 0) {
+              rootSeatIds.push({ nid, podName: pn });
+            }
+          }
+        }
+        if (rootSeatIds.length === 0 && nodes.length > 0) {
+          const first = nodes[0];
+          const firstPod = first.podNamespace || (first.logicalId ? first.logicalId.split('.')[0] : '') || 'default';
+          rootSeatIds.push({ nid: getNodeKeyId(first), podName: firstPod });
+        }
+
+        for (const rs of rootSeatIds) {
+          g.setEdge(hubNodeId, rs.nid, { kind: 'ownership', podName: rs.podName, weight: 6, minlen: 1 }, 'own::' + rs.nid);
+        }
+
+        // Feed directed seat edges into Dagre; orient escalates_to (target -> source) so feedback arcs never invert forward ranks
+        for (const pe of pendingEdges) {
+          const isEsc = pe.kind === 'escalates_to';
+          const samePod = pe.sPod === pe.tPod;
+          const u = isEsc ? pe.tId : pe.sId;
+          const v = isEsc ? pe.sId : pe.tId;
+          g.setEdge(u, v, {
+            kind: pe.kind,
+            reversed: isEsc,
+            weight: pe.kind === 'delegates_to' ? (samePod ? 12 : 4) : pe.kind === 'collaborates_with' ? 3 : 0,
+            minlen: 1
+          }, pe.edgeId);
+        }
+
+        dagreLib.layout(g);
+
+        const hubCenter = g.node(hubNodeId);
+        const rawHub = {
+          x: hubCenter.x - rigHubW / 2,
+          y: hubCenter.y - rigHubH / 2,
+          w: rigHubW,
+          h: rigHubH
+        };
+
+        let minX = rawHub.x;
+        let maxX = rawHub.x + rawHub.w;
+        let minY = rawHub.y;
+        let maxY = rawHub.y + rawHub.h;
+
+        const rawSeatById = {};
+        const rawPods = [];
+        for (const pn of podNames) {
+          const memberBoxes = [];
+          for (const n of podMap[pn]) {
+            const nid = getNodeKeyId(n);
+            const c = g.node(nid);
+            const sb = {
+              key: rig.name + '::' + nid,
+              id: nid,
+              node: n,
+              rig,
+              podName: pn,
+              x: c.x - cardW / 2,
+              y: c.y - cardH / 2,
+              w: cardW,
+              h: cardH
+            };
+            memberBoxes.push(sb);
+            rawSeatById[nid] = sb;
+          }
+          const px1 = Math.min(...memberBoxes.map(b => b.x)) - podPadX;
+          const py1 = Math.min(...memberBoxes.map(b => b.y)) - podPadTop;
+          const px2 = Math.max(...memberBoxes.map(b => b.x + b.w)) + podPadX;
+          const py2 = Math.max(...memberBoxes.map(b => b.y + b.h)) + podPadBottom;
+          if (px1 < minX) minX = px1;
+          if (px2 > maxX) maxX = px2;
+          if (py1 < minY) minY = py1;
+          if (py2 > maxY) maxY = py2;
+          rawPods.push({
+            podName: pn,
+            nodes: podMap[pn],
+            seatBoxes: memberBoxes,
+            x: px1,
+            y: py1,
+            w: px2 - px1,
+            h: py2 - py1,
+            portXs: []
+          });
+        }
+
+        const rawPodByName = {};
+        for (const rp of rawPods) rawPodByName[rp.podName] = rp;
+
+        // Extract Dagre-routed Rig -> Entry Pod ownership curves (one clean branch per entry pod, clipped at Pod top header)
+        const rawOwnershipEdges = [];
+        const seenEntryPod = new Set();
+        for (const rs of rootSeatIds) {
+          if (seenEntryPod.has(rs.podName)) continue;
+          seenEntryPod.add(rs.podName);
+          const eo = g.edge(hubNodeId, rs.nid, 'own::' + rs.nid);
+          const targetPod = rawPodByName[rs.podName];
+          if (eo && Array.isArray(eo.points) && targetPod) {
+            const clipped = clipPolylineAtPodTop(eo.points, targetPod.y);
+            for (const pt of clipped) {
+              if (pt.x < minX) minX = pt.x;
+              if (pt.x > maxX) maxX = pt.x;
+              if (pt.y < minY) minY = pt.y;
+              if (pt.y > maxY) maxY = pt.y;
+            }
+            const endPt = clipped[clipped.length - 1];
+            targetPod.portXs.push(endPt.x);
+            rawOwnershipEdges.push({ podName: rs.podName, targetPod, points: clipped });
+          }
+        }
+
+        // Extract Dagre-routed seat-to-seat relationship polylines
+        const rawRelEdges = [];
+        for (const pe of pendingEdges) {
+          const isEsc = pe.kind === 'escalates_to';
+          const eo = g.edge(isEsc ? pe.tId : pe.sId, isEsc ? pe.sId : pe.tId, pe.edgeId);
+          const pts = (eo && Array.isArray(eo.points))
+            ? (isEsc ? eo.points.slice().reverse() : eo.points.slice())
+            : [];
+          for (const pt of pts) {
+            if (pt.x < minX) minX = pt.x;
+            if (pt.x > maxX) maxX = pt.x;
+            if (pt.y < minY) minY = pt.y;
+            if (pt.y > maxY) maxY = pt.y;
+          }
+          rawRelEdges.push({
+            rigName: rig.name,
+            sourceKey: rawSeatById[pe.sId].key,
+            targetKey: rawSeatById[pe.tId].key,
+            src: rawSeatById[pe.sId],
+            dst: rawSeatById[pe.tId],
+            kind: pe.kind,
+            points: pts
+          });
+        }
+
+        const contentW = maxX - minX;
+        const contentH = maxY - minY;
+        if (contentW > maxRigContentW) maxRigContentW = contentW;
+
+        rawRigGraphs.push({
+          rig,
+          nodes,
+          rawHub,
+          rawPods,
+          rawOwnershipEdges,
+          rawRelEdges,
+          minX,
+          minY,
+          contentW,
+          contentH
+        });
+      }
+
+      if (rawRigGraphs.length === 0) {
+        stage.innerHTML = '<div class="empty-state">No agent seats match the selected filters or search query.</div>';
+        updateGraphInspector([]);
+        return;
+      }
+
+      const vpEl = document.getElementById('topology-graph-viewport');
+      const vpAvailW = (vpEl && vpEl.clientWidth > 320) ? (vpEl.clientWidth - 36) : 920;
+      const totalWidth = Math.round(Math.max(maxRigContentW + 64, Math.min(vpAvailW, 1140)));
+
+      // Pass 2: Center each Rig's Dagre top-down graph horizontally and stack Rig sections vertically
+      const rigLayouts = [];
+      let currentY = 16;
+
+      for (const rg of rawRigGraphs) {
+        const rigTopY = currentY;
+        const shiftX = Math.round((totalWidth - rg.contentW) / 2 - rg.minX);
+        const shiftY = Math.round(rigTopY + rigPadTop - rg.minY);
+        const rigHeight = Math.round(rg.contentH + rigPadTop + rigPadBottom);
+
+        const hubX = rg.rawHub.x + shiftX;
+        const hubY = rg.rawHub.y + shiftY;
+        graphRigHubRegistry[rg.rig.name] = { x: hubX, y: hubY, w: rg.rawHub.w, h: rg.rawHub.h };
+
+        for (const p of rg.rawPods) {
+          p.x += shiftX;
+          p.y += shiftY;
+          p.portXs = p.portXs.map(px => px + shiftX);
+          for (const sb of p.seatBoxes) {
+            sb.x += shiftX;
+            sb.y += shiftY;
+            graphSeatRegistry[sb.key] = sb;
+          }
+        }
+
+        for (const oe of rg.rawOwnershipEdges) {
+          oe.points = oe.points.map(pt => ({ x: pt.x + shiftX, y: pt.y + shiftY }));
+        }
+
+        for (const re of rg.rawRelEdges) {
+          re.points = re.points.map(pt => ({ x: pt.x + shiftX, y: pt.y + shiftY }));
+          allRenderedEdges.push(re);
         }
 
         rigLayouts.push({
-          rig,
-          nodes,
-          pods: topoPods,
-          edges: resolvedEdges,
-          topY: currentY,
+          rig: rg.rig,
+          nodes: rg.nodes,
+          pods: rg.rawPods,
+          ownershipEdges: rg.rawOwnershipEdges,
+          edges: rg.rawRelEdges,
+          topY: rigTopY,
           height: rigHeight,
-          hubX: rigHubX,
-          hubY: rigHubY,
+          hubX,
+          hubY,
           hubW: rigHubW,
           hubH: rigHubH
         });
 
         currentY += rigHeight + rigSectionGap;
-      }
-
-      if (rigLayouts.length === 0) {
-        stage.innerHTML = '<div class="empty-state">No agent seats match the selected filters or search query.</div>';
-        updateGraphInspector([]);
-        return;
       }
 
       // Clear stale selection if filtered out
@@ -2840,160 +2983,91 @@ export function renderSidecarHtml(daemonUrl: string): string {
         const workingInRig = rl.nodes.filter(n => (((n.activityState && n.activityState.display) || n.sessionStatus) === 'working')).length;
 
         // Subtle Rig swimlane frame
-        svgBg += '<rect x="10" y="' + rl.topY + '" width="' + (totalWidth - 20) + '" height="' + rl.height + '" rx="12" fill="#15171c" fill-opacity="0.65" stroke="' + (selectedGraphRigName === rig.name ? '#5c7cfa' : '#23262e') + '" stroke-width="' + (selectedGraphRigName === rig.name ? '1.6' : '1') + '"/>';
+        svgBg += '<rect x="12" y="' + rl.topY + '" width="' + (totalWidth - 24) + '" height="' + rl.height + '" rx="12" fill="#15171c" fill-opacity="0.65" stroke="' + (selectedGraphRigName === rig.name ? '#5c7cfa' : '#23262e') + '" stroke-width="' + (selectedGraphRigName === rig.name ? '1.6' : '1') + '"/>';
 
-        // Rig Hub Node (Column 0)
+        // Rig Hub Node Centered at TOP (Rank 0)
         const hubBorder = (selectedGraphRigName === rig.name || (selectedGraphSeatKey && highlightedRig === rig.name)) ? '#8ab4f8' : '#364fc7';
         const hubStatusColor = workingInRig > 0 ? '#81c995' : '#8ab4f8';
+        const hubCenterX = rl.hubX + rl.hubW / 2;
+        const hubBottomY = rl.hubY + rl.hubH;
+
         svgPodsAndHubs += '<g class="graph-rig-hub" opacity="' + rigDimOpacity + '" style="cursor:pointer;" onclick="selectGraphRig(\\'' + escapeJs(rig.name) + '\\')">' +
           '<rect class="rig-hub-bg" x="' + rl.hubX + '" y="' + rl.hubY + '" width="' + rl.hubW + '" height="' + rl.hubH + '" rx="10" fill="#181e2c" stroke="' + hubBorder + '" stroke-width="1.6"/>' +
-          '<rect x="' + (rl.hubX + 12) + '" y="' + (rl.hubY + 12) + '" width="36" height="16" rx="4" fill="#263859"/>' +
-          '<text x="' + (rl.hubX + 30) + '" y="' + (rl.hubY + 23) + '" text-anchor="middle" fill="#8ab4f8" font-size="9.5" font-weight="700" font-family="\\'Inter\\', sans-serif">RIG</text>' +
-          '<circle cx="' + (rl.hubX + rl.hubW - 16) + '" cy="' + (rl.hubY + 20) + '" r="4.5" fill="' + hubStatusColor + '"/>' +
-          '<text x="' + (rl.hubX + 14) + '" y="' + (rl.hubY + 46) + '" fill="#ffffff" font-size="13.5" font-weight="700" font-family="\\'Inter\\', sans-serif">' +
-            escapeHtml(rig.name.length > 20 ? (rig.name.slice(0, 19) + '…') : rig.name) +
+          '<rect x="' + (rl.hubX + 14) + '" y="' + (rl.hubY + 12) + '" width="36" height="16" rx="4" fill="#263859"/>' +
+          '<text x="' + (rl.hubX + 32) + '" y="' + (rl.hubY + 23) + '" text-anchor="middle" fill="#8ab4f8" font-size="9.5" font-weight="700" font-family="\\'Inter\\', sans-serif">RIG</text>' +
+          '<circle cx="' + (rl.hubX + rl.hubW - 18) + '" cy="' + (rl.hubY + 20) + '" r="4.5" fill="' + hubStatusColor + '"/>' +
+          '<text x="' + hubCenterX + '" y="' + (rl.hubY + 46) + '" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="700" font-family="\\'Inter\\', sans-serif">' +
+            escapeHtml(rig.name.length > 24 ? (rig.name.slice(0, 23) + '…') : rig.name) +
           '</text>' +
-          '<text x="' + (rl.hubX + 14) + '" y="' + (rl.hubY + 65) + '" fill="#9aa5b4" font-size="10.5" font-family="\\'JetBrains Mono\\', monospace">' +
+          '<text x="' + hubCenterX + '" y="' + (rl.hubY + 64) + '" text-anchor="middle" fill="#9aa5b4" font-size="10.5" font-family="\\'JetBrains Mono\\', monospace">' +
             rl.nodes.length + ' seats • ' + workingInRig + ' working' +
           '</text>' +
-          '<text x="' + (rl.hubX + 14) + '" y="' + (rl.hubY + 82) + '" fill="#6f7d95" font-size="10" font-family="\\'Inter\\', sans-serif">' +
+          '<text x="' + hubCenterX + '" y="' + (rl.hubY + 79) + '" text-anchor="middle" fill="#6f7d95" font-size="10" font-family="\\'Inter\\', sans-serif">' +
             rl.pods.length + (rl.pods.length === 1 ? ' pod • ' : ' pods • ') + rl.edges.length + ' edges' +
           '</text>' +
-          '<circle cx="' + (rl.hubX + rl.hubW) + '" cy="' + (rl.hubY + rl.hubH / 2) + '" r="4" fill="#5c7cfa" stroke="#121212" stroke-width="1.5"/>' +
+          '<circle cx="' + hubCenterX + '" cy="' + hubBottomY + '" r="4" fill="#5c7cfa" stroke="#121212" stroke-width="1.5"/>' +
         '</g>';
 
-        // Pod Containers & Rig -> Pod Structural Ownership Curves
+        // Pod Compound Cluster Containers
         for (const p of rl.pods) {
           const podHasHighlight = !hasSelection ? true : p.seatBoxes.some(sb => highlightedSeats.has(sb.key));
           const podOpacity = podHasHighlight ? '1' : '0.26';
+          const portCircles = p.portXs.map(px => '<circle cx="' + px.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="3.5" fill="#5c7cfa"/>').join('');
 
           svgPodsAndHubs += '<g opacity="' + podOpacity + '">' +
-            '<rect x="' + p.x + '" y="' + p.y + '" width="' + p.w + '" height="' + p.h + '" rx="10" fill="#18191d" stroke="#2d3139" stroke-width="1.1"/>' +
-            '<text x="' + (p.x + 14) + '" y="' + (p.y + 20) + '" fill="#a3acb9" font-size="10.5" font-weight="600" font-family="\\'JetBrains Mono\\', monospace">' +
+            '<rect x="' + p.x.toFixed(1) + '" y="' + p.y.toFixed(1) + '" width="' + p.w.toFixed(1) + '" height="' + p.h.toFixed(1) + '" rx="10" fill="#18191d" stroke="#2d3139" stroke-width="1.1"/>' +
+            '<text x="' + (p.x + 14).toFixed(1) + '" y="' + (p.y + 21).toFixed(1) + '" fill="#a3acb9" font-size="10.5" font-weight="600" font-family="\\'JetBrains Mono\\', monospace">' +
               'POD: ' + escapeHtml(p.podName) + ' (' + p.nodes.length + ')' +
             '</text>' +
-            '<circle cx="' + p.x + '" cy="' + (p.y + p.h / 2) + '" r="3.5" fill="#5c7cfa"/>' +
+            portCircles +
           '</g>';
+        }
 
-          if (graphEdgeLayers.ownership) {
-            const ox1 = rl.hubX + rl.hubW;
-            const oy1 = rl.hubY + rl.hubH / 2;
-            const ox2 = p.x;
-            const oy2 = p.y + p.h / 2;
-            const dx = Math.max(36, (ox2 - ox1) * 0.55);
-            const ownActive = (selectedGraphRigName === rig.name) || (selectedGraphSeatKey && p.seatBoxes.some(sb => sb.key === selectedGraphSeatKey));
-            const ownOpacity = hasSelection ? (ownActive ? '0.88' : '0.12') : '0.45';
-            const ownWidth = ownActive ? '1.8' : '1.25';
-            svgOwnershipEdges += '<path class="graph-edge-ownership" d="M ' + ox1 + ' ' + oy1 + ' C ' + (ox1 + dx) + ' ' + oy1 + ', ' + (ox2 - dx) + ' ' + oy2 + ', ' + (ox2 - 3) + ' ' + oy2 + '" fill="none" stroke="#5c7cfa" stroke-width="' + ownWidth + '" stroke-dasharray="4 3" opacity="' + ownOpacity + '" marker-end="url(#arrow-ownership)"/>';
+        // Dagre-routed Top-Down Rig -> Entry Pod Structural Ownership Edges
+        if (graphEdgeLayers.ownership) {
+          for (const oe of rl.ownershipEdges) {
+            const ownActive = (selectedGraphRigName === rig.name) ||
+              (selectedGraphSeatKey && oe.targetPod.seatBoxes.some(sb => sb.key === selectedGraphSeatKey));
+            const ownOpacity = hasSelection ? (ownActive ? '0.92' : '0.12') : '0.56';
+            const ownWidth = ownActive ? '1.85' : '1.35';
+            const ownPath = dagrePointsToSvgPath(oe.points);
+            if (ownPath) {
+              svgOwnershipEdges += '<path class="graph-edge-ownership" d="' + ownPath + '" fill="none" stroke="#5c7cfa" stroke-width="' + ownWidth + '" stroke-dasharray="4 3" opacity="' + ownOpacity + '" marker-end="url(#arrow-ownership)"/>';
+            }
           }
         }
 
-        // Directed Seat-to-Seat Relationship Edges
+        // Dagre-routed Seat-to-Seat Relationship B-Splines
         const visibleRigEdges = rl.edges.filter(e => graphEdgeLayers[e.kind] !== false);
-        const edgePairSet = new Set(visibleRigEdges.map(e => e.sourceKey + '->' + e.targetKey));
-
         for (const e of visibleRigEdges) {
-          const s = e.src;
-          const d = e.dst;
-          const hasReverse = edgePairSet.has(e.targetKey + '->' + e.sourceKey);
           const isEdgeSelected = selectedGraphSeatKey
             ? (e.sourceKey === selectedGraphSeatKey || e.targetKey === selectedGraphSeatKey)
             : (selectedGraphRigName === rig.name);
-          const edgeOpacity = hasSelection ? (isEdgeSelected ? '1' : '0.12') : '0.82';
+          const defaultOpacity = e.kind === 'escalates_to' ? '0.46' : '0.86';
+          const edgeOpacity = hasSelection ? (isEdgeSelected ? '1' : '0.1') : defaultOpacity;
           const strokeColor = e.kind === 'escalates_to' ? '#fdd663' : e.kind === 'collaborates_with' ? '#81c995' : '#8ab4f8';
           const markerId = e.kind === 'escalates_to' ? 'arrow-escalates' : e.kind === 'collaborates_with' ? 'arrow-collaborates' : 'arrow-delegates';
           const dashAttr = e.kind === 'escalates_to' ? ' stroke-dasharray="5 4"' : e.kind === 'collaborates_with' ? ' stroke-dasharray="3 2"' : '';
-          const strokeW = isEdgeSelected ? '2.25' : '1.65';
+          const strokeW = isEdgeSelected ? '2.25' : (e.kind === 'escalates_to' ? '1.35' : '1.65');
 
-          let pathD = '';
-          let labelX = 0;
-          let labelY = 0;
-
-          const sameRow = Math.abs(s.y - d.y) < 20;
-          if (sameRow && s.x < d.x) {
-            // Left-to-right on same row
-            const spanSteps = Math.round((d.x - s.x) / (cardW + seatColGap));
-            if (spanSteps <= 1) {
-              const x1 = s.x + s.w;
-              const y1 = s.y + (hasReverse ? s.h * 0.36 : s.h * 0.46);
-              const x2 = d.x - 4;
-              const y2 = d.y + (hasReverse ? d.h * 0.36 : d.h * 0.46);
-              const cGap = Math.max(22, (x2 - x1) * 0.45);
-              pathD = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + cGap) + ' ' + y1 + ', ' + (x2 - cGap) + ' ' + y2 + ', ' + x2 + ' ' + y2;
-              labelX = (x1 + x2) / 2;
-              labelY = y1 - 8;
-            } else {
-              // Arch cleanly above intermediate cards
-              const x1 = s.x + s.w * 0.72;
-              const y1 = s.y;
-              const x2 = d.x + d.w * 0.28;
-              const y2 = d.y - 3;
-              const archY = Math.min(y1, y2) - (22 + Math.min(26, spanSteps * 7));
-              pathD = 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + archY + ', ' + x2 + ' ' + archY + ', ' + x2 + ' ' + y2;
-              labelX = (x1 + x2) / 2;
-              labelY = archY + 6;
-            }
-          } else if (sameRow && s.x > d.x) {
-            // Right-to-left feedback/escalation on same row: arch cleanly below cards
-            const spanSteps = Math.max(1, Math.round((s.x - d.x) / (cardW + seatColGap)));
-            const x1 = s.x + s.w * 0.35;
-            const y1 = s.y + s.h;
-            const x2 = d.x + d.w * 0.65;
-            const y2 = d.y + d.h + 3;
-            const archY = Math.max(y1, y2) + 18 + Math.min(28, (spanSteps - 1) * 9);
-            pathD = 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + archY + ', ' + x2 + ' ' + archY + ', ' + x2 + ' ' + y2;
-            labelX = (x1 + x2) / 2;
-            labelY = archY - 4;
-          } else if (d.x >= s.x + s.w + 16) {
-            // Diagonal left-to-right across pods/tiers
-            const offset = hasReverse ? (e.kind === 'escalates_to' ? 12 : -10) : 0;
-            const x1 = s.x + s.w;
-            const y1 = s.y + s.h * 0.5 + offset;
-            const x2 = d.x - 4;
-            const y2 = d.y + d.h * 0.5 + offset;
-            const cx = Math.max(36, (x2 - x1) * 0.5);
-            pathD = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + cx) + ' ' + y1 + ', ' + (x2 - cx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
-            labelX = (x1 + x2) / 2;
-            labelY = (y1 + y2) / 2 - 6;
-          } else if (s.x >= d.x + d.w + 16) {
-            // Diagonal right-to-left across pods/tiers
-            const offset = hasReverse ? 14 : 0;
-            const x1 = s.x;
-            const y1 = s.y + s.h * 0.62 + offset;
-            const x2 = d.x + d.w + 4;
-            const y2 = d.y + d.h * 0.62 + offset;
-            const cx = Math.max(36, (x1 - x2) * 0.5);
-            pathD = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 - cx) + ' ' + y1 + ', ' + (x2 + cx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
-            labelX = (x1 + x2) / 2;
-            labelY = (y1 + y2) / 2 + 10;
-          } else {
-            // Vertical cross-row connection
-            const goingDown = d.y > s.y;
-            const latOffset = hasReverse ? (goingDown ? -16 : 16) : 0;
-            const x1 = s.x + s.w * 0.5 + latOffset;
-            const y1 = goingDown ? (s.y + s.h) : s.y;
-            const x2 = d.x + d.w * 0.5 + latOffset;
-            const y2 = goingDown ? (d.y - 4) : (d.y + d.h + 4);
-            const cy = Math.max(26, Math.abs(y2 - y1) * 0.45);
-            pathD = 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (goingDown ? y1 + cy : y1 - cy) + ', ' + x2 + ' ' + (goingDown ? y2 - cy : y2 + cy) + ', ' + x2 + ' ' + y2;
-            labelX = (x1 + x2) / 2 + latOffset * 0.4;
-            labelY = (y1 + y2) / 2;
-          }
+          const pathD = dagrePointsToSvgPath(e.points);
+          if (!pathD) continue;
 
           svgRelEdges += '<path class="graph-edge-rel" data-kind="' + escapeHtml(e.kind) + '" d="' + pathD + '" fill="none" stroke="' + strokeColor + '" stroke-width="' + strokeW + '"' + dashAttr + ' opacity="' + edgeOpacity + '" marker-end="url(#' + markerId + ')"/>';
 
           const showEdgeLabel = (selectedGraphSeatKey && isEdgeSelected) || (!hasSelection && visibleRigEdges.length <= 6);
           if (showEdgeLabel) {
+            const mid = dagrePolylineMidpoint(e.points);
             const shortKind = e.kind === 'delegates_to' ? 'delegates' : e.kind === 'escalates_to' ? 'escalates' : e.kind === 'collaborates_with' ? 'collaborates' : e.kind;
             const pillW = shortKind.length * 5.6 + 12;
             svgRelLabels += '<g opacity="' + (isEdgeSelected ? '1' : '0.88') + '">' +
-              '<rect x="' + (labelX - pillW / 2) + '" y="' + (labelY - 8) + '" width="' + pillW + '" height="14" rx="7" fill="#12141a" stroke="' + strokeColor + '" stroke-width="0.9"/>' +
-              '<text x="' + labelX + '" y="' + (labelY + 2) + '" text-anchor="middle" fill="' + strokeColor + '" font-size="8.5" font-family="\\'JetBrains Mono\\', monospace">' + escapeHtml(shortKind) + '</text>' +
+              '<rect x="' + (mid.x - pillW / 2).toFixed(1) + '" y="' + (mid.y - 8).toFixed(1) + '" width="' + pillW.toFixed(1) + '" height="14" rx="7" fill="#12141a" stroke="' + strokeColor + '" stroke-width="0.9"/>' +
+              '<text x="' + mid.x.toFixed(1) + '" y="' + (mid.y + 2).toFixed(1) + '" text-anchor="middle" fill="' + strokeColor + '" font-size="8.5" font-family="\\'JetBrains Mono\\', monospace">' + escapeHtml(shortKind) + '</text>' +
             '</g>';
           }
         }
 
-        // Seat Nodes
+        // Rich Interactive Seat Cards with Inline Chat↗ / Screen / Msg Buttons
         for (const p of rl.pods) {
           for (const sb of p.seatBoxes) {
             const node = sb.node;
@@ -3013,7 +3087,7 @@ export function renderSidecarHtml(daemonUrl: string): string {
             const cardFill = isPrimarySelected ? '#212838' : '#1e2026';
 
             const modelLabel = node.model
-              ? (node.model.length > 26 ? node.model.slice(0, 25) + '…' : node.model)
+              ? (node.model.length > 27 ? node.model.slice(0, 26) + '…' : node.model)
               : (runtime + ' • ' + disp);
             const deg = seatDegree[sb.key] || 0;
 
@@ -3021,7 +3095,7 @@ export function renderSidecarHtml(daemonUrl: string): string {
               '<rect class="seat-card-bg" x="' + sb.x + '" y="' + sb.y + '" width="' + sb.w + '" height="' + sb.h + '" rx="8" fill="' + cardFill + '" stroke="' + cardBorder + '" stroke-width="' + cardStrokeW + '"/>' +
               '<circle cx="' + (sb.x + 15) + '" cy="' + (sb.y + 19) + '" r="4.5" fill="' + stateColor + '"/>' +
               '<text x="' + (sb.x + 27) + '" y="' + (sb.y + 23) + '" fill="#ffffff" font-size="12" font-weight="600" font-family="\\'Inter\\', sans-serif">' +
-                escapeHtml(node.logicalId.length > 20 ? (node.logicalId.slice(0, 19) + '…') : node.logicalId) +
+                escapeHtml(node.logicalId.length > 21 ? (node.logicalId.slice(0, 20) + '…') : node.logicalId) +
               '</text>' +
               '<rect x="' + (sb.x + sb.w - 48) + '" y="' + (sb.y + 10) + '" width="38" height="16" rx="4" fill="#262b36"/>' +
               '<text x="' + (sb.x + sb.w - 29) + '" y="' + (sb.y + 21) + '" text-anchor="middle" fill="#9fb4d9" font-size="9" font-weight="600" font-family="\\'JetBrains Mono\\', monospace">' + escapeHtml(runtimeShort) + '</text>' +
@@ -3031,7 +3105,6 @@ export function renderSidecarHtml(daemonUrl: string): string {
               '<text x="' + (sb.x + 14) + '" y="' + (sb.y + 70) + '" fill="' + stateColor + '" font-size="9.5" font-weight="500" font-family="\\'JetBrains Mono\\', monospace">' +
                 escapeHtml(disp) + (deg > 0 ? (' • ' + deg + ' rel') : '') +
               '</text>' +
-              // Direct 1-click mini action pills inside the SVG seat card
               (convId ? (
                 '<g class="graph-action-pill" onclick="event.stopPropagation(); openExternalHref(\\'conversation://' + escapeJs(convId) + '\\')">' +
                   '<rect x="' + (sb.x + sb.w - 134) + '" y="' + (sb.y + 56) + '" width="40" height="19" rx="4" fill="#182030" stroke="#304261" stroke-width="0.9"/>' +
