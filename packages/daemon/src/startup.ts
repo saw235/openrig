@@ -1235,6 +1235,16 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         now: () => observedAt,
       });
     });
+    const { recordAntigravityLimitBanner } = await import("./domain/provider/antigravity-limit-banner.js");
+    seatStructuralActivityService.attachAntigravityLimitBanner((sessionName, banner, observedAt) => {
+      recordAntigravityLimitBanner({
+        store: agentActivityStore,
+        resolveGeneration: (s) => sessionRegistry.currentOccupantGenerationForSession(s),
+        sessionName,
+        banner,
+        now: () => observedAt,
+      });
+    });
   }
   const { SeatAttentionReconciler } = await import("./domain/seat-attention-reconciler.js");
   const seatAttentionReconciler = new SeatAttentionReconciler({

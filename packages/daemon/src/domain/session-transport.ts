@@ -71,9 +71,12 @@ const MID_WORK_PATTERNS = [
 // placeholder counts as idle only through MID_WORK_PATTERNS here, and classifySendReadiness
 // never lets a placeholder-only verdict override a display-fresh running/needs_input hook.
 
+const ANTIGRAVITY_EMPTY_COMPOSER_PATTERN = /^>\s*$/;
+
 const IDLE_PROMPT_PATTERNS = [
   COMPOSER_EMPTY_PATTERN,  // prompt char + optional whitespace + end-of-line only
   CODEX_EMPTY_COMPOSER_PATTERN,
+  ANTIGRAVITY_EMPTY_COMPOSER_PATTERN,
 ];
 
 const PROMPT_DRAFT_PATTERNS = [
