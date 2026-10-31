@@ -15,7 +15,7 @@
       (function () {
         try {
           var stored = localStorage.getItem("openrig.theme");
-          var choice = stored === "light" || stored === "dark" || stored === "system" ? stored : "dark";
+          var choice = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
           var dark =
             choice === "dark" ||
             (choice === "system" &&

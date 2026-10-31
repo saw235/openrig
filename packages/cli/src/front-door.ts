@@ -228,10 +228,10 @@ async function defaultLaunchTui(): Promise<number> {
 }
 
 function resolveDefaultLauncher(): () => Promise<number> {
-  if (process.env.OPENRIG_FRONT_DOOR === "tui") {
-    return defaultLaunchTui;
+  if (process.env.OPENRIG_FRONT_DOOR === "studio") {
+    return defaultLaunchStudio;
   }
-  return defaultLaunchStudio;
+  return defaultLaunchTui;
 }
 
 /**

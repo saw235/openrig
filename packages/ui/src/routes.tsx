@@ -97,6 +97,12 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  component: Dashboard,
+});
+
+const antigravityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/antigravity",
   component: AntigravityWorkspace,
 });
 
@@ -545,6 +551,7 @@ export const routeTree = rootRoute.addChildren([
   topologyPodRoute,
   topologySeatRoute,
   forYouRoute,
+  antigravityRoute,
   projectRoute,
   projectMissionRoute,
   projectSliceRoute,

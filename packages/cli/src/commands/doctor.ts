@@ -431,7 +431,12 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
       // Only the newly added provider probes inherit setup's timeout.
       const providerChecks = checkProviderReadiness(depsOverride ?? {
         ...deps,
-        exec: (c: string) => execSync(c, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }),
+        exec: (c: string) =>
+          execSync(c, {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            ...((c.startsWith("claude ") || c.startsWith("codex ")) ? { timeout: 30_000 } : {}),
+          }),
       });
       const { checks, asyncChecks } = runDoctorChecks(deps, providerChecks);
       const resolvedAsync = await Promise.all(asyncChecks);

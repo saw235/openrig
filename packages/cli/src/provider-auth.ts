@@ -10,7 +10,7 @@ export interface ProviderAuthDeps {
 
 export interface ProviderCheck {
   name: string;
-  status: "pass" | "fail" | "skipped";
+  status: "pass" | "warn" | "fail" | "skipped";
   message: string;
   reason?: string;
   fix?: string;
@@ -138,7 +138,7 @@ export function checkAntigravityAuth(deps: ProviderAuthDeps, installed: boolean)
   }
   return {
     name: "antigravity_auth",
-    status: "fail",
+    status: "warn",
     message: "Google Antigravity (agy) is installed but not signed in.",
     reason: "Antigravity seats cannot launch until agy has been signed in.",
     fix: "Run `agy` once and complete the Google sign-in, then rerun `rig setup`.",
@@ -166,11 +166,13 @@ export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] 
     }
     checks.push(auth(deps, installed));
   }
-  // Optional third runtime: reported only when its CLI is present, so existing setups see no new failure.
+  // Optional third runtime: reported only when its CLI is authentically present, so existing setups see no new failure.
   try {
-    deps.exec("agy --help");
-    checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity available." });
-    checks.push(checkAntigravityAuth(deps, true));
+    const out = deps.exec("agy --help");
+    if (/Usage of agy:|antigravity/i.test(out)) {
+      checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity available." });
+      checks.push(checkAntigravityAuth(deps, true));
+    }
   } catch {
     // agy not installed: nothing to report.
   }

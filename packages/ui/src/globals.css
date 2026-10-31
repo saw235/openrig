@@ -605,33 +605,38 @@
      nesting): base cards sit a hair above the ground; MORE-nested surfaces go
      DARKER (toward black). Range compressed to 7.5–9.5% L; depth = borders +
      hard-shadow offset. */
-  /* Antigravity 2.0 neutral obsidian palette (no purple, no tint). */
-  --background: 0 0% 7.5%;                   /* #131313 canvas */
-  --surface-container-lowest: 0 0% 12.2%;    /* #1f1f1f cards */
-  --surface-container-low: 0 0% 9.4%;        /* #181818 sidebars */
-  --surface-container: 0 0% 10.5%;
-  --surface-container-high: 0 0% 14%;
-  --surface-container-highest: 0 0% 16.5%;
+  --background: 120 8% 7%;                   /* #111311 — warm near-black ground */
+  --surface-container-lowest: 120 6% 9.5%;   /* #171917 — base card: a hair above ground */
+  --surface-container-low: 120 5% 9%;        /* slightly recessed */
+  --surface-container: 120 5% 8.5%;          /* nested panels recede */
+  --surface-container-high: 120 5% 8%;       /* deeper nesting = darker */
+  --surface-container-highest: 120 4% 7.5%;  /* most-nested ≈ ground */
 
-  --on-surface: 220 9% 92%;                  /* #e8eaed */
-  --on-surface-variant: 210 6% 63%;          /* #9aa0a6 */
+  /* Ink → high lightness, warm-green tint kept. */
+  --on-surface: 100 10% 90%;               /* #e4e8e0 — primary text */
+  --on-surface-variant: 108 6% 66%;        /* #a3a99f — secondary text */
 
-  /* Google blue accent */
-  --secondary: 217 90% 76%;                  /* #8ab4f8 */
-  --secondary-container: 217 40% 22%;
+  /* Technical blue — HIGHER L + a touch more sat to read on dark. */
+  --secondary: 213 30% 70%;                /* #92abcf — lines / crosshairs / edges */
+  --secondary-container: 220 24% 24%;      /* #2f3a4c */
 
-  --tertiary: 5 82% 68%;                     /* #f28b82 */
-  --error: 5 82% 68%;
+  /* Stamped red — saturated → HIGHER lightness in dark. */
+  --tertiary: 2 72% 64%;                   /* #e26562 — critical / destructive ink */
+  --error: 0 62% 62%;                      /* #dc5b5b */
 
-  --primary: 217 90% 76%;
-  --inverse-surface: 220 9% 92%;
+  /* Interactive — primary lifted to a light warm neutral so it reads on dark. */
+  --primary: 100 6% 76%;                   /* #bfc4bd */
+  --inverse-surface: 100 12% 92%;          /* dark theme's "inverse" is now LIGHT */
 
-  /* Hairline borders: white used at low alpha by the `*` border rule */
-  --outline: 0 0% 30%;
-  --outline-variant: 0 0% 100%;
+  /* Borders → mid, subtle on dark. */
+  --outline: 108 5% 40%;                   /* #616b5f */
+  --outline-variant: 108 6% 32%;           /* #4b5349 — ghost borders at 15% opacity */
 
-  --success: 134 44% 50%;
-  --warning: 42 92% 60%;
+  /* Success green — HIGHER lightness for dark contrast. */
+  --success: 145 52% 52%;                  /* #43c684 */
+
+  /* Warning amber — slightly brighter for dark. */
+  --warning: 42 92% 60%;                   /* #f6b13a */
 
   /* shadcn compat aliases reference the base tokens above (var(--…)) → they
      inherit the dark values automatically (--foreground/--card/--border/--input/
@@ -648,9 +653,9 @@
 .dark .hard-shadow { box-shadow: 2px 2px 0px #000000; }
 .dark .hard-shadow-hover:hover { box-shadow: 1px 1px 0px #000000; }
 
-/* Antigravity canvas is flat: no dot-grid in dark. */
+/* Body dot-grid #d1d1cf (light) → a faint dark dot on the near-black ground. */
 .dark body {
-  background-image: none;
+  background-image: radial-gradient(hsl(120 6% 22%) 1px, transparent 1px);
 }
 
 /* Vellum translucent overlays were white-tinted → tint dark, or they glow white. */
