@@ -100,6 +100,7 @@ export const COMMAND_LOADERS: ReadonlyMap<string, Load> = new Map<string, Load>(
   ["startup-proof", async () => (await import("./commands/startup-proof.js")).startupProofCommand()],
   ["scope", async () => (await import("./commands/scope.js")).scopeCommand()],
   ["proof", async () => (await import("./commands/proof.js")).proofCommand()],
+  ["sidecar", async () => (await import("./commands/sidecar.js")).sidecarCommand()],
 ]);
 
 /** The program for `rig <first> …` with only what that call needs: the bare root for
