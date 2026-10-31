@@ -96,23 +96,23 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   let sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
   let nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
   let runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
-  let generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
   let conversationId = firstString(
     env.ANTIGRAVITY_CONVERSATION_ID,
     providerPayload && providerPayload.conversationId,
     providerPayload && providerPayload.conversation_id
   );
 
+  let agSeat = null;
   if (!sessionName && !nodeId) {
-    const agSeat = resolveAntigravityConversationSeat(providerPayload, env);
+    agSeat = resolveAntigravityConversationSeat(providerPayload, env);
     if (agSeat) {
       sessionName = agSeat.sessionName;
       nodeId = agSeat.nodeId;
       runtime = runtime || agSeat.runtime;
-      generation = generation || agSeat.occupantGeneration;
       conversationId = conversationId || agSeat.conversationId;
     }
   }
+  const generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION) || (agSeat && agSeat.occupantGeneration) || null;
 
   const hookEvent = firstString(
     getArgvEvent(argv),
@@ -242,22 +242,22 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
   let sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
   let nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
   let runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
-  let generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
   let conversationId = firstString(
     env.ANTIGRAVITY_CONVERSATION_ID,
     providerPayload.conversationId,
     providerPayload.conversation_id
   );
+  let agSeat = null;
   if (!sessionName && !nodeId) {
-    const agSeat = resolveAntigravityConversationSeat(providerPayload, env);
+    agSeat = resolveAntigravityConversationSeat(providerPayload, env);
     if (agSeat) {
       sessionName = agSeat.sessionName;
       nodeId = agSeat.nodeId;
       runtime = runtime || agSeat.runtime;
-      generation = generation || agSeat.occupantGeneration;
       conversationId = conversationId || agSeat.conversationId;
     }
   }
+  const generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION) || (agSeat && agSeat.occupantGeneration) || null;
   // How this session began (startup, resume, clear or compact). The daemon tells a resumed
   // conversation's new id from a /clear by it; it is absent from runtimes that do not report it.
   const source = firstString(providerPayload.source);

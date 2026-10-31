@@ -74,7 +74,7 @@ export interface UsageHostOptions {
 }
 
 const toEpoch = (iso: string) => Math.floor(Date.parse(iso) / 1000);
-export const DEFAULT_RESET = "2026-10-20T00:00:00.000Z";
+export const DEFAULT_RESET = "2027-10-20T00:00:00.000Z";
 
 export class UsageHost {
   readonly requests: Array<{ method: string; path: string }> = [];
