@@ -185,4 +185,15 @@ export interface RuntimeAdapter {
 
   /** Check if the runtime harness is responsive and ready. */
   checkReady(binding: NodeBinding): Promise<ReadinessResult>;
+
+  /**
+   * Optional direct programmatic text delivery for API/RPC-backed runtimes
+   * (such as Google Antigravity `agentapi`). When defined, StartupOrchestrator
+   * uses this instead of pasting text into the tmux pane stdin.
+   */
+  sendInteractiveText?(
+    binding: NodeBinding,
+    text: string,
+    meta?: { sessionId?: string; source?: string },
+  ): Promise<{ ok: true; resumeToken?: string; resumeType?: string } | { ok: false; error: string }>;
 }

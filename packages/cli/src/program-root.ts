@@ -1,9 +1,11 @@
 import type { Command } from "commander";
+import { hydrateAntigravitySeatEnv } from "./antigravity-seat-env.js";
 import { CLI_VERSION } from "./version.js";
 
 /** The root `rig` command's own name, description, version and help text, shared by the full
  *  program (index.ts) and the one-command program the binary builds (lazy-program.ts). */
 export function configureRoot(program: Command): Command {
+  hydrateAntigravitySeatEnv(process.env);
   return program
     .name("rig")
     .description("CLI for the OpenRig local control plane")

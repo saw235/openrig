@@ -9,6 +9,7 @@ export function whoamiRoutes(): Hono {
     const svc = c.get("whoamiService" as never) as WhoamiService;
     const nodeId = c.req.query("nodeId");
     const sessionName = c.req.query("sessionName");
+    const conversationId = c.req.query("conversationId");
     const targetRepo = c.req.query("targetRepo");
     // OPR.0.4.0.27: the CLI opts into compact (skips contextUsage/runtimeContext
     // compute). A direct /api/whoami with NO compact param stays FULL (API
@@ -16,9 +17,9 @@ export function whoamiRoutes(): Hono {
     const compact = c.req.query("compact") === "1";
     const permissionDiagnostics = c.req.query("diagnostics") === "permission";
 
-    if (!nodeId && !sessionName) {
+    if (!nodeId && !sessionName && !conversationId) {
       return c.json({
-        error: "Missing query parameter: provide nodeId or sessionName. Run rig ps --nodes to find available sessions.",
+        error: "Missing query parameter: provide nodeId, sessionName, or conversationId. Run rig ps --nodes to find available sessions.",
       }, 400);
     }
 
@@ -26,12 +27,13 @@ export function whoamiRoutes(): Hono {
       const result = svc.resolve({
         nodeId: nodeId ?? undefined,
         sessionName: sessionName ?? undefined,
+        conversationId: conversationId ?? undefined,
         targetRepoOverride: targetRepo ?? undefined,
         compact,
       });
 
       if (!result) {
-        const identifier = nodeId ?? sessionName;
+        const identifier = nodeId ?? sessionName ?? conversationId;
         return c.json({
           error: `Session or node '${identifier}' not found in any managed rig. Check available sessions with: rig ps --nodes`,
         }, 404);

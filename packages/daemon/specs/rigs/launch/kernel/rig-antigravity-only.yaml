@@ -1,8 +1,8 @@
 version: "0.2"
 name: kernel
 summary: >
-  Antigravity-only kernel variant: all three agents run on Google Antigravity (agy). Selected
-  by rig daemon start when agy is signed in but neither Claude nor Codex is
+  Antigravity-only kernel variant: all three agents run on Google Antigravity (agentapi). Selected
+  by rig daemon start when Antigravity IDE is signed in but neither Claude nor Codex is
   authenticated.
 
 culture_file: culture/CULTURE.md

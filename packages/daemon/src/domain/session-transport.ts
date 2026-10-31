@@ -34,6 +34,7 @@ import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
 import { isAttentionRequiredReadinessCode, type NodeBinding, type ReadinessResult } from "./runtime-adapter.js";
 import { getLatestStartupFailedEvent, hasClaudeResumeIdentityWork, isRecoverableStartupFailure } from "./startup-orchestrator.js";
+import { AgentApiClient, formatAntigravityTranscriptTail } from "../adapters/antigravity-agentapi-client.js";
 
 // OPR.0.4.1.10 — send-readiness freshness. The runtime-hook store keeps a 5min freshness for activity
 // DISPLAY, but "safe to send NOW" needs a tight window: a stale "idle" read must not authorize a send
@@ -1518,6 +1519,7 @@ interface SessionTransportDeps {
   captureObserver?: CaptureObserverSink;
   listProcesses?: NativeProcessLister;
   runtimeAdapters?: Record<string, TransportReadinessChecker>;
+  antigravityClient?: AgentApiClient;
   /** transport.verify_input_box, read per verified Claude Code or Codex send. Absent means off. */
   verifyInputBox?: () => boolean;
 }
@@ -1565,6 +1567,7 @@ export class SessionTransport {
   private captureObserver?: CaptureObserverSink;
   private listProcesses?: NativeProcessLister;
   private runtimeAdapters: Record<string, TransportReadinessChecker>;
+  private antigravityClient?: AgentApiClient;
   private inFlightReconciliations = new Map<string, Promise<boolean>>();
   private verifyInputBox?: () => boolean;
 
@@ -1584,7 +1587,26 @@ export class SessionTransport {
     this.captureObserver = deps.captureObserver;
     this.listProcesses = deps.listProcesses;
     this.runtimeAdapters = deps.runtimeAdapters ?? {};
+    this.antigravityClient = deps.antigravityClient;
     this.verifyInputBox = deps.verifyInputBox;
+  }
+
+  private resolveAntigravityClient(): AgentApiClient {
+    if (this.antigravityClient) return this.antigravityClient;
+    const adapter = this.runtimeAdapters["antigravity"] as { client?: AgentApiClient } | undefined;
+    if (adapter?.client) return adapter.client;
+    this.antigravityClient = new AgentApiClient();
+    return this.antigravityClient;
+  }
+
+  private resolveAntigravityConversationId(sessionName: string, resumeToken: string | null): string | null {
+    if (resumeToken?.trim()) return resumeToken.trim();
+    const adapter = this.runtimeAdapters["antigravity"] as {
+      getConversationIdForSession?: (name: string) => string | null;
+    } | undefined;
+    const fromAdapter = adapter?.getConversationIdForSession?.(sessionName);
+    if (fromAdapter?.trim()) return fromAdapter.trim();
+    return this.resolveAntigravityClient().lookupBySessionName(sessionName)?.conversationId ?? null;
   }
 
   attachRuntimeAdapters(adapters: Record<string, TransportReadinessChecker>): void {
@@ -2071,6 +2093,9 @@ export class SessionTransport {
     // and a probe or wait would only delay that refusal (or mistake it for
     // an absent session).
     if (meta.attachmentType === "external_cli") {
+      if (meta.runtime === "antigravity" && meta.resumeToken) {
+        return null;
+      }
       return { ok: false, failure: {
         ok: false,
         sessionName,
@@ -2232,28 +2257,38 @@ export class SessionTransport {
 
     if (sessionMeta.attachmentType === "external_cli") {
       if (runtime === "antigravity" && sessionMeta.resumeToken) {
-        try {
-          const { execFileSync } = await import("node:child_process");
-          const fs = await import("node:fs");
-          const os = await import("node:os");
-          const nodePath = await import("node:path");
-          const agentApi = nodePath.join(os.homedir(), ".gemini", "antigravity", "bin", "agentapi");
-          if (fs.existsSync(agentApi)) {
-            execFileSync(agentApi, ["send-message", sessionMeta.resumeToken, text], { encoding: "utf8" });
+        const client = this.resolveAntigravityClient();
+        if (client.isAvailable()) {
+          if (opts?.stampISO) {
+            text = appendDeliveredSegment(text, this.now().getTime() - Date.parse(opts.stampISO));
+          }
+          if (observed) observed.sentHash = hashSentText(text);
+          const sent = await this.runStage(
+            "session_transport.send_text",
+            () => {
+              opts?.beforeWrite?.();
+              return client.sendMessage(sessionMeta.resumeToken!, text);
+            },
+            (result) => result.ok ? "ok" : "failed",
+          );
+          if (!sent.ok) {
             return observe({
-              ok: true,
+              ok: false,
               sessionName,
-              outcome: "delivered",
-              conversationId: sessionMeta.resumeToken,
+              reason: "send_failed",
+              outcome: "failed",
+              error: `Failed to deliver via agentapi: ${sent.error}`,
+              ...(waitMode ? { sent: false, ...waitEvidence } : {}),
             });
           }
-        } catch (err) {
-          return {
-            ok: false,
+          return observe({
+            ok: true,
             sessionName,
-            reason: "send_failed",
-            error: `Failed to deliver via agentapi: ${(err as Error).message}`,
-          };
+            ...(opts?.verify ? { verified: true } : {}),
+            outcome: "delivered",
+            conversationId: sessionMeta.resumeToken,
+            ...(waitMode ? { sent: true, ...waitEvidence } : {}),
+          });
         }
       }
       return {
@@ -2629,8 +2664,50 @@ export class SessionTransport {
     const copyModeFailure = await leavePaneMode("No text was sent.");
     if (copyModeFailure) return observe({ ...copyModeFailure, ...(waitMode ? waitEvidence : {}) });
 
-    // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
+    // 3. Deliver ordinary messages: RPC/agentapi directly for Antigravity seats; paste + Enter for tmux TUIs.
     if (observed) observed.sentHash = hashSentText(text);
+    if (runtime === "antigravity") {
+      const conversationId = this.resolveAntigravityConversationId(sessionName, sessionMeta.resumeToken);
+      if (!conversationId) {
+        return observe({
+          ok: false,
+          sessionName,
+          sent: false,
+          reason: "target_runtime_unverified",
+          error: `Refused: '${sessionName}' does not have a bound Antigravity agentapi conversationId yet. Wait for startup orientation to complete before sending.`,
+          ...(waitMode ? waitEvidence : {}),
+        });
+      }
+      const client = this.resolveAntigravityClient();
+      const apiResult = await this.runStage(
+        "session_transport.send_text",
+        () => {
+          opts?.beforeWrite?.();
+          return client.sendMessage(conversationId, text);
+        },
+        (result) => result.ok ? "ok" : "failed",
+      );
+      if (!apiResult.ok) {
+        return observe({
+          ok: false,
+          sessionName,
+          reason: "send_failed",
+          outcome: "failed",
+          error: `Failed to send text to '${sessionName}' via agentapi: ${apiResult.error}`,
+          ...(waitMode ? { sent: false, ...waitEvidence } : {}),
+        });
+      }
+      return observe({
+        ok: true,
+        sessionName,
+        ...(opts?.verify ? { verified: true } : {}),
+        outcome: "delivered",
+        conversationId,
+        ...(sendAdvisory ? { warning: sendAdvisory } : {}),
+        ...(waitMode ? { sent: true, ...waitEvidence } : {}),
+      });
+    }
+
     const textResult = await this.runStage(
       "session_transport.send_text",
       () => {
@@ -2649,16 +2726,6 @@ export class SessionTransport {
         error: `Failed to send text to '${sessionName}': ${textResult.message}`,
         ...(waitMode ? { sent: false, ...waitEvidence } : {}),
       });
-    }
-
-    // Asynchronously mirror message to Antigravity IDE if the seat is linked
-    try {
-      import("../adapters/antigravity-agentapi-mirror.js").then(({ AntigravityAgentApiMirror }) => {
-        const mirror = new AntigravityAgentApiMirror();
-        mirror.sendMessage(sessionName, text).catch(() => {});
-      }).catch(() => {});
-    } catch {
-      // best-effort
     }
 
     // 4. Wait 200ms (spike-proven delay)
@@ -3228,6 +3295,17 @@ export class SessionTransport {
   async capture(sessionName: string, opts?: { lines?: number }): Promise<CaptureResult> {
     const sessionMeta = this.getSessionMeta(sessionName);
     if (sessionMeta.attachmentType === "external_cli") {
+      if (sessionMeta.runtime === "antigravity" && sessionMeta.resumeToken) {
+        const lines = opts?.lines ?? 20;
+        const client = this.resolveAntigravityClient();
+        const transcriptTail = formatAntigravityTranscriptTail(
+          client.transcriptPath(sessionMeta.resumeToken),
+          lines,
+        );
+        if (transcriptTail !== null) {
+          return { ok: true, sessionName, content: transcriptTail, lines };
+        }
+      }
       return {
         ok: false,
         sessionName,

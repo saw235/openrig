@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { whoamiCommand, resolveIdentitySource } from "../src/commands/whoami.js";
+import { hydrateAntigravitySeatEnv } from "../src/antigravity-seat-env.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -80,6 +84,9 @@ describe("Whoami CLI", () => {
       } else if (url.includes("/api/whoami") && url.includes("sessionName=dev-impl")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ...WHOAMI_RESPONSE, resolvedBy: "session_name" }));
+      } else if (url.includes("/api/whoami") && url.includes("conversationId=conv-uuid-1")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ...WHOAMI_RESPONSE, resolvedBy: "conversation_id" }));
       } else if (url.includes("/api/whoami") && url.includes("sessionName=unknown")) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Session not found in any managed rig. Check: rig ps --nodes" }));
@@ -101,10 +108,17 @@ describe("Whoami CLI", () => {
     savedEnv = {
       OPENRIG_NODE_ID: process.env["OPENRIG_NODE_ID"],
       OPENRIG_SESSION_NAME: process.env["OPENRIG_SESSION_NAME"],
+      OPENRIG_RUNTIME: process.env["OPENRIG_RUNTIME"],
+      OPENRIG_OCCUPANT_GENERATION: process.env["OPENRIG_OCCUPANT_GENERATION"],
+      OPENRIG_HOME: process.env["OPENRIG_HOME"],
+      ANTIGRAVITY_CONVERSATION_ID: process.env["ANTIGRAVITY_CONVERSATION_ID"],
       TMUX_PANE: process.env["TMUX_PANE"],
     };
     delete process.env["OPENRIG_NODE_ID"];
     delete process.env["OPENRIG_SESSION_NAME"];
+    delete process.env["OPENRIG_RUNTIME"];
+    delete process.env["OPENRIG_OCCUPANT_GENERATION"];
+    delete process.env["ANTIGRAVITY_CONVERSATION_ID"];
     delete process.env["TMUX_PANE"];
   });
 
@@ -453,5 +467,67 @@ describe("Whoami CLI", () => {
     const help = out.replace(/\s+/g, " ");
     expect(help).toContain("--full");
     expect(help).toContain("--verbose");
+  });
+
+  it("hydrateAntigravitySeatEnv hydrates OPENRIG_* from ANTIGRAVITY_CONVERSATION_ID + conversations.json", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-ag-whoami-"));
+    try {
+      const convId = "conv-uuid-hydrated";
+      const stateDir = path.join(tmpHome, "state", "antigravity");
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, "conversations.json"),
+        JSON.stringify({
+          byConversationId: {
+            [convId]: {
+              conversationId: convId,
+              sessionName: "dev-impl@my-rig",
+              nodeId: "node-1",
+              runtime: "antigravity",
+              occupantGeneration: "gen-42",
+            },
+          },
+        }),
+        "utf-8",
+      );
+
+      process.env["OPENRIG_HOME"] = tmpHome;
+      process.env["ANTIGRAVITY_CONVERSATION_ID"] = convId;
+
+      const hydrated = hydrateAntigravitySeatEnv(process.env);
+      expect(hydrated).toBe(true);
+      expect(process.env["OPENRIG_NODE_ID"]).toBe("node-1");
+      expect(process.env["OPENRIG_SESSION_NAME"]).toBe("dev-impl@my-rig");
+      expect(process.env["OPENRIG_RUNTIME"]).toBe("antigravity");
+      expect(process.env["OPENRIG_OCCUPANT_GENERATION"]).toBe("gen-42");
+
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "whoami", "--json"]);
+      });
+      const parsed = JSON.parse(logs.join("\n"));
+      expect(parsed.identity.nodeId).toBe("node-1");
+      expect(parsed.identity.sessionName).toBe("dev-impl@my-rig");
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it("ANTIGRAVITY_CONVERSATION_ID falls back to ?conversationId= query when conversations.json is absent", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-ag-empty-"));
+    try {
+      process.env["OPENRIG_HOME"] = tmpHome;
+      process.env["ANTIGRAVITY_CONVERSATION_ID"] = "conv-uuid-1";
+
+      expect(resolveIdentitySource({})).toEqual({ conversationId: "conv-uuid-1" });
+
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "whoami", "--json"]);
+      });
+      const parsed = JSON.parse(logs.join("\n"));
+      expect(parsed.resolvedBy).toBe("conversation_id");
+      expect(parsed.identity.logicalId).toBe("dev.impl");
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 });

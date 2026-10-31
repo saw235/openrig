@@ -7,13 +7,17 @@ import { runtimeProbeFailure, runtimeProbeTimeout } from "../adapters/preflight-
 import { piVersionNotice } from "../adapters/pi-readiness.js";
 import type { LegacyRigSpec as RigSpec, PreflightResult, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { deriveSessionName, validateSessionName, validateSessionComponents, VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
+import { shellQuote } from "../adapters/shell-quote.js";
+import { resolveAgentApiBinary } from "../adapters/antigravity-agentapi-client.js";
 
 const RUNTIME_COMMANDS: Record<string, string> = {
   "claude-code": "claude --version",
   "codex": "codex --version",
   "pi": "pi --version",
   "omp": "omp --version",
-  "antigravity": "agy --help",
+  get antigravity() {
+    return `${shellQuote(resolveAgentApiBinary())} --help`;
+  },
 };
 
 interface RigSpecPreflightDeps {

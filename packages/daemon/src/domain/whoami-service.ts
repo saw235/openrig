@@ -5,7 +5,7 @@ import type { TranscriptStore } from "./transcript-store.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
 export interface WhoamiResult {
-  resolvedBy: "node_id" | "session_name";
+  resolvedBy: "node_id" | "session_name" | "conversation_id";
   identity: {
     rigId: string;
     rigName: string;
@@ -154,9 +154,15 @@ export class WhoamiService {
     this.contextUsageStore = deps.contextUsageStore ?? null;
   }
 
-  resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string; compact?: boolean }): WhoamiResult | null {
+  resolve(query: {
+    nodeId?: string;
+    sessionName?: string;
+    conversationId?: string;
+    targetRepoOverride?: string;
+    compact?: boolean;
+  }): WhoamiResult | null {
     let nodeRow: NodeRow | undefined;
-    let resolvedBy: "node_id" | "session_name";
+    let resolvedBy: "node_id" | "session_name" | "conversation_id";
     let currentSessionName: string | null;
 
     if (query.nodeId) {
@@ -164,11 +170,13 @@ export class WhoamiService {
       if (!nodeRow) return null;
       resolvedBy = "node_id";
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
-    } else if (query.sessionName) {
-      // Find sessions matching this name — check for ambiguity across rigs
-      const sessionRows = this.db
-        .prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC")
-        .all(query.sessionName) as SessionRow[];
+    } else if (query.sessionName || query.conversationId) {
+      const lookupBySessionName = Boolean(query.sessionName);
+      const sessionRows = (lookupBySessionName
+        ? this.db.prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC").all(query.sessionName)
+        : this.db
+            .prepare("SELECT * FROM sessions WHERE resume_token = ? AND resume_type = 'antigravity_id' ORDER BY id DESC")
+            .all(query.conversationId)) as SessionRow[];
 
       if (sessionRows.length === 0) return null;
 
@@ -190,15 +198,16 @@ export class WhoamiService {
       const candidateRows = activeRows.length > 0 ? activeRows : archivedRows;
       const candidateRigIds = new Set(candidateRows.map((r) => r.rigId));
       if (candidateRigIds.size > 1) {
+        const label = query.sessionName ?? query.conversationId;
         throw new WhoamiAmbiguousError(
-          `Session '${query.sessionName}' is ambiguous — found in ${candidateRigIds.size} rigs. Use --node-id instead.`
+          `Session '${label}' is ambiguous — found in ${candidateRigIds.size} rigs. Use --node-id instead.`
         );
       }
 
       const sess = candidateRows[0]!.session;
       nodeRow = this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(sess.node_id) as NodeRow | undefined;
       if (!nodeRow) return null;
-      resolvedBy = "session_name";
+      resolvedBy = lookupBySessionName ? "session_name" : "conversation_id";
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
     } else {
       return null;

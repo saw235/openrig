@@ -10,6 +10,7 @@ export interface HookActivityInput {
   runtime: string | null;
   sessionName?: string | null;
   nodeId?: string | null;
+  conversationId?: string | null;
   hookEvent: string;
   subtype?: string | null;
   occurredAt?: string | null;
@@ -71,11 +72,11 @@ export class AgentActivityStore {
   }
 
   recordHookEvent(input: HookActivityInput): RecordHookActivityResult {
-    if (!input.sessionName && !input.nodeId) {
+    if (!input.sessionName && !input.nodeId && !input.conversationId) {
       return {
         ok: false,
         code: "missing_session_identity",
-        error: "Hook activity requires a managed sessionName or nodeId",
+        error: "Hook activity requires a managed sessionName, nodeId, or conversationId",
       };
     }
 
@@ -284,7 +285,12 @@ export class AgentActivityStore {
     };
   }
 
-  resolveSession(input: { sessionName?: string | null; nodeId?: string | null; runtime?: string | null }): { sessionId: string; rigId: string; nodeId: string; sessionName: string; runtime: string | null } | null {
+  resolveSession(input: {
+    sessionName?: string | null;
+    nodeId?: string | null;
+    conversationId?: string | null;
+    runtime?: string | null;
+  }): { sessionId: string; rigId: string; nodeId: string; sessionName: string; runtime: string | null } | null {
     const row = this._resolveSession(input);
     if (!row) return null;
     // OMP identity is node-scoped so a reused session name on another node can
@@ -296,7 +302,11 @@ export class AgentActivityStore {
     return { sessionId: sessionRow.id, rigId: row.rig_id, nodeId: row.node_id, sessionName: row.session_name, runtime: row.runtime };
   }
 
-  private _resolveSession(input: { sessionName?: string | null; nodeId?: string | null }): SessionLookupRow | null {
+  private _resolveSession(input: {
+    sessionName?: string | null;
+    nodeId?: string | null;
+    conversationId?: string | null;
+  }): SessionLookupRow | null {
     if (input.nodeId) {
       const row = this.db.prepare(`
         SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
@@ -309,16 +319,31 @@ export class AgentActivityStore {
       if (row?.session_name) return row;
     }
 
-    if (!input.sessionName) return null;
-    const row = this.db.prepare(`
-      SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
-      FROM sessions s
-      JOIN nodes n ON n.id = s.node_id
-      WHERE s.session_name = ?
-      ORDER BY s.id DESC
-      LIMIT 1
-    `).get(input.sessionName) as SessionLookupRow | undefined;
-    return row ?? null;
+    if (input.sessionName) {
+      const row = this.db.prepare(`
+        SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
+        FROM sessions s
+        JOIN nodes n ON n.id = s.node_id
+        WHERE s.session_name = ?
+        ORDER BY s.id DESC
+        LIMIT 1
+      `).get(input.sessionName) as SessionLookupRow | undefined;
+      if (row) return row;
+    }
+
+    if (input.conversationId) {
+      const row = this.db.prepare(`
+        SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
+        FROM sessions s
+        JOIN nodes n ON n.id = s.node_id
+        WHERE s.resume_token = ? AND s.resume_type = 'antigravity_id'
+        ORDER BY (CASE WHEN s.status = 'running' THEN 0 ELSE 1 END), s.id DESC
+        LIMIT 1
+      `).get(input.conversationId) as SessionLookupRow | undefined;
+      return row ?? null;
+    }
+
+    return null;
   }
 }
 
