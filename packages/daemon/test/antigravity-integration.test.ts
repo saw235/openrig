@@ -1,6 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createFullTestDb } from "./helpers/test-app.js";
 import { startSidecarServer } from "../src/sidecar/sidecar-server.js";
+import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import { EventBus } from "../src/domain/event-bus.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
+import { WhoamiService } from "../src/domain/whoami-service.js";
+import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { SessionTransport } from "../src/domain/session-transport.js";
+import { AgentApiClient } from "../src/adapters/antigravity-agentapi-client.js";
 import http from "node:http";
 
 const require = createRequire(import.meta.url);
@@ -60,6 +72,174 @@ describe("Antigravity Activity Relay Integration", () => {
       subtype: "run_command",
       turnId: "5",
     });
+  });
+
+  it("auto-hydrates seat identity and occupantGeneration from ANTIGRAVITY_CONVERSATION_ID + conversations.json when OPENRIG_* env vars are absent", () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-ag-relay-"));
+    try {
+      const convId = "15140af0-0c39-4131-88f9-4874882aaf12";
+      const stateDir = path.join(tmpHome, "state", "antigravity");
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, "conversations.json"),
+        JSON.stringify({
+          byConversationId: {
+            [convId]: {
+              conversationId: convId,
+              sessionName: "impl@demo-rig",
+              nodeId: "node-ag-1",
+              runtime: "antigravity",
+              occupantGeneration: "gen-ag-99",
+              projectId: "proj-1",
+              cwd: "/tmp/demo",
+              title: "OpenRig: impl (demo-rig)",
+              updatedAt: "2026-10-31T12:00:00Z",
+            },
+          },
+          bySessionName: {
+            "impl@demo-rig": convId,
+          },
+        }),
+        "utf-8",
+      );
+
+      const bareAgentApiEnv = {
+        OPENRIG_HOME: tmpHome,
+        ANTIGRAVITY_CONVERSATION_ID: convId,
+      };
+      const argv = ["node", "activity-relay.cjs", "--event", "PreInvocation"];
+      const identity = buildSessionIdentityPayload({}, bareAgentApiEnv, () => new Date("2026-10-31T12:00:00Z"), argv);
+      expect(identity).toMatchObject({
+        eventFamily: "session_identity",
+        sessionName: "impl@demo-rig",
+        nodeId: "node-ag-1",
+        conversationId: convId,
+        runtime: "antigravity",
+        generation: "gen-ag-99",
+        sessionId: convId,
+        hookEvent: "PreInvocation",
+      });
+
+      const hookPayload = buildOpenRigPayload(
+        { toolCall: { name: "read_file" }, stepIdx: 2 },
+        bareAgentApiEnv,
+        () => new Date("2026-10-31T12:00:01Z"),
+        ["node", "activity-relay.cjs", "--event", "PreToolUse"],
+      );
+      expect(hookPayload).toMatchObject({
+        sessionName: "impl@demo-rig",
+        nodeId: "node-ag-1",
+        conversationId: convId,
+        runtime: "antigravity",
+        generation: "gen-ag-99",
+        hookEvent: "PreToolUse",
+        subtype: "read_file",
+        turnId: "2",
+      });
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it("AgentActivityStore, WhoamiService, and SessionTransport resolve and deliver via agentapi conversationId", async () => {
+    const db = createFullTestDb();
+    try {
+      const now = "2026-10-31T12:00:00.000Z";
+      const convId = "99990af0-0c39-4131-88f9-4874882aaf12";
+      const rigRepo = new RigRepository(db);
+      const sessionRegistry = new SessionRegistry(db);
+      const eventBus = new EventBus(db);
+
+      const rig = rigRepo.createRig("demo-rig");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "antigravity" });
+      const session = sessionRegistry.registerSession(node.id, "dev-impl@demo-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      sessionRegistry.updateResumeToken(session.id, "antigravity_id", convId, "hook");
+      sessionRegistry.updateBinding(node.id, {
+        attachmentType: "tmux",
+        tmuxSession: "dev-impl@demo-rig",
+        tmuxWindow: "0",
+        tmuxPane: "%1",
+      });
+
+      // 1. AgentActivityStore DB fallback resolution by conversationId
+      const store = new AgentActivityStore({ db, eventBus, now: () => new Date(now) });
+      const recorded = store.recordHookEvent({
+        runtime: "antigravity",
+        conversationId: convId,
+        hookEvent: "PostInvocation",
+        occurredAt: now,
+      });
+      expect(recorded.ok).toBe(true);
+      if (recorded.ok) {
+        expect(recorded.activity.state).toBe("idle");
+        expect(recorded.event.nodeId).toBe(node.id);
+      }
+
+      // 2. WhoamiService DB resolution by conversationId
+      const whoami = new WhoamiService({
+        db,
+        rigRepo,
+        sessionRegistry,
+        transcriptStore: new TranscriptStore({ enabled: false, basePath: "/tmp" }),
+      });
+      const resolvedWhoami = whoami.resolve({ conversationId: convId, compact: true });
+      expect(resolvedWhoami).not.toBeNull();
+      expect(resolvedWhoami?.resolvedBy).toBe("conversation_id");
+      expect(resolvedWhoami?.identity.nodeId).toBe(node.id);
+      expect(resolvedWhoami?.identity.sessionName).toBe("dev-impl@demo-rig");
+
+      // 3. SessionTransport delivers directly via AgentApiClient.sendMessage (skipping tmux sendText)
+      let tmuxPasted = false;
+      const apiCalls: Array<{ file: string; args: readonly string[] }> = [];
+      const client = new AgentApiClient({
+        agentapiBinary: "/app/bin/agentapi",
+        appDataDir: "/app",
+        openrigHome: "/openrig",
+        fsOps: {
+          exists: (p) => p === "/app/bin/agentapi",
+          readFile: () => "",
+          writeFile: () => {},
+          mkdirp: () => {},
+        },
+        execFileAsync: async (file, args) => {
+          apiCalls.push({ file, args });
+          return { stdout: "{}", stderr: "" };
+        },
+      });
+      const transport = new SessionTransport({
+        db,
+        rigRepo,
+        sessionRegistry,
+        agentActivityStore: store,
+        eventBus,
+        antigravityClient: client,
+        sleep: async () => {},
+        tmuxAdapter: {
+          probeSession: async () => ({ state: "present" as const }),
+          hasSession: async () => true,
+          getPaneCommand: async () => "node",
+          getPaneMode: async () => ({ inMode: false, mode: null }),
+          capturePaneContent: async () => "[AGENT] Ready",
+          sendText: async () => {
+            tmuxPasted = true;
+            return { ok: true as const };
+          },
+          sendKeys: async () => ({ ok: true as const }),
+        } as never,
+      });
+
+      const sendRes = await transport.send("dev-impl@demo-rig", "Hello via agentapi", { verify: true });
+      expect(sendRes.ok).toBe(true);
+      expect(sendRes.outcome).toBe("delivered");
+      expect(sendRes.verified).toBe(true);
+      expect(sendRes.conversationId).toBe(convId);
+      expect(tmuxPasted).toBe(false);
+      expect(apiCalls).toHaveLength(1);
+      expect(apiCalls[0]!.args).toEqual(["send-message", "--", convId, "Hello via agentapi"]);
+    } finally {
+      db.close();
+    }
   });
 });
 

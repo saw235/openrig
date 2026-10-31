@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { runSetup, type SetupDeps } from "../src/commands/setup.js";
+import { checkAntigravityAuth, checkProviderReadiness } from "../src/provider-auth.js";
 
 const originalExitCode = process.exitCode;
 afterEach(() => {
@@ -113,5 +114,30 @@ describe("setup and doctor provider facts", () => {
       expect(output).toContain("codex login");
     }
     expect(commands.filter((command) => /claude|codex|npm/.test(command))).toEqual(["claude --version", "claude auth status", "codex --version", "codex login status"]);
+  });
+
+  it("checks Antigravity readiness via agentapi and Antigravity IDE state (without agy CLI)", () => {
+    const executed: string[] = [];
+    const checks = checkProviderReadiness({
+      env: { HOME: "/fixture" },
+      exec: (cmd) => {
+        executed.push(cmd);
+        return "ok";
+      },
+      readFile: (p) => {
+        if (p === "/fixture/.gemini/antigravity/bin/agentapi") return "#!/usr/bin/env sh\n";
+        if (p === "/fixture/.gemini/antigravity/antigravity_state.pbtxt") return "signed_in: true\n";
+        return null;
+      },
+    });
+    expect(executed.some((c) => /\bagy\b/.test(c))).toBe(false);
+    expect(checks.find((c) => c.name === "antigravity_install")?.status).toBe("pass");
+    expect(checks.find((c) => c.name === "antigravity_auth")?.status).toBe("pass");
+
+    const missingState = checkAntigravityAuth(
+      { env: { HOME: "/fixture" }, exec: () => "ok", readFile: () => null },
+      true,
+    );
+    expect(missingState.status).toBe("fail");
   });
 });

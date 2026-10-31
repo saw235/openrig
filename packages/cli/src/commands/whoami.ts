@@ -13,6 +13,7 @@ import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-help
 import { ConfigStore } from "../config-store.js";
 import { compactOutputEnabled } from "../queue-receipt.js";
 import { shellQuote } from "../cross-host-executor.js";
+import { hydrateAntigravitySeatEnv } from "../antigravity-seat-env.js";
 
 interface WhoamiCliOptions {
   nodeId?: string;
@@ -162,9 +163,13 @@ type TmuxExecFn = (cmd: string) => string;
 
 const defaultTmuxExec: TmuxExecFn = (cmd: string) => execSync(cmd, { encoding: "utf-8" }).trim();
 
-function buildPartialWhoamiResult(source: { nodeId?: string; sessionName?: string }): Record<string, unknown> {
+function buildPartialWhoamiResult(source: {
+  nodeId?: string;
+  sessionName?: string;
+  conversationId?: string;
+}): Record<string, unknown> {
   return {
-    resolvedBy: source.nodeId ? "node_id" : "session_name",
+    resolvedBy: source.nodeId ? "node_id" : source.sessionName ? "session_name" : "conversation_id",
     partial: true,
     daemonReachable: false,
     identity: {
@@ -179,7 +184,7 @@ function buildPartialWhoamiResult(source: { nodeId?: string; sessionName?: strin
       memberId: null,
       memberLabel: null,
       sessionName: source.sessionName ?? null,
-      runtime: null,
+      runtime: source.conversationId ? "antigravity" : null,
       cwd: null,
       agentRef: null,
       profile: null,
@@ -196,19 +201,22 @@ function buildPartialWhoamiResult(source: { nodeId?: string; sessionName?: strin
  * Resolve the current session identity using the approved resolution chain:
  * 1. --node-id flag
  * 2. --session flag
- * 3. OPENRIG_NODE_ID env
+ * 3. OPENRIG_NODE_ID env (auto-hydrated from ANTIGRAVITY_CONVERSATION_ID index when applicable)
  * 4. OPENRIG_SESSION_NAME env
  * 5. TMUX_PANE → @rigged_node_id tmux metadata
  * 6. TMUX_PANE → @rigged_session_name tmux metadata
  * 7. TMUX_PANE → tmux display-message (raw session name)
- * 8. fail
+ * 8. ANTIGRAVITY_CONVERSATION_ID → daemon resume_token lookup
+ * 9. fail
  */
 export function resolveIdentitySource(
   opts: { nodeId?: string; session?: string },
   tmuxExec: TmuxExecFn = defaultTmuxExec,
-): { nodeId?: string; sessionName?: string } | null {
+): { nodeId?: string; sessionName?: string; conversationId?: string } | null {
   if (opts.nodeId) return { nodeId: opts.nodeId };
   if (opts.session) return { sessionName: opts.session };
+
+  hydrateAntigravitySeatEnv(process.env);
 
   const envNodeId = readOpenRigEnv("OPENRIG_NODE_ID", "RIGGED_NODE_ID");
   const envSessionName = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
@@ -242,6 +250,12 @@ export function resolveIdentitySource(
     } catch {
       // tmux not available or pane not found — skip
     }
+  }
+
+  // Step 8: Antigravity agentapi conversation UUID fallback (when conversations.json is absent)
+  const antigravityConversationId = process.env["ANTIGRAVITY_CONVERSATION_ID"]?.trim();
+  if (antigravityConversationId) {
+    return { conversationId: antigravityConversationId };
   }
 
   return null;
@@ -337,7 +351,8 @@ left out. --all-peers lists every one (today's compact output).`)
       const client = deps.clientFactory(getDaemonUrl(status));
       const params = new URLSearchParams();
       if (source.nodeId) params.set("nodeId", source.nodeId);
-      else params.set("sessionName", source.sessionName!);
+      else if (source.sessionName) params.set("sessionName", source.sessionName);
+      else if (source.conversationId) params.set("conversationId", source.conversationId);
       const targetRepo = readOpenRigEnv("OPENRIG_TARGET_REPO", "RIGGED_TARGET_REPO");
       if (targetRepo) params.set("targetRepo", targetRepo);
       // Compact by default (the every-boot recovery call); --full opts out so

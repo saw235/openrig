@@ -91,6 +91,7 @@ import { rigModeCommand, type RigModeDeps } from "./commands/rig-mode.js";
 import { policyCommand } from "./commands/policy.js";
 import { startupProofCommand, type StartupProofDeps } from "./commands/startup-proof.js";
 import type { LifecycleDeps } from "./daemon-lifecycle.js";
+import { hydrateAntigravitySeatEnv } from "./antigravity-seat-env.js";
 import { configureRoot } from "./program-root.js";
 
 export interface ProgramDeps {
@@ -284,6 +285,7 @@ export { runFrontDoor } from "./front-door.js";
 
 // Only parse when executed directly (not imported for testing)
 if (isDirectRun()) {
+  hydrateAntigravitySeatEnv(process.env);
   // Slice-17 mini-req 7 — bare `rig` in a real terminal opens the TUI; any
   // arg or a non-TTY stream falls through to the normal program unchanged.
   const { runFrontDoor } = await import("./front-door.js");

@@ -1,33 +1,48 @@
-// First-class Google Antigravity runtime adapter (native `agy` CLI).
+// First-class Google Antigravity runtime adapter (consolidated onto `agentapi`).
 //
-// The harness runs interactively inside the seat's tmux pane, like Claude/Codex.
+// Eliminates the legacy `agy` CLI TUI and the dual-conversation mirror split:
 //   - guidance  -> <cwd>/AGENTS.md (managed block)
 //   - skills    -> <cwd>/.agents/skills/<id>/
-//   - launch    -> `agy --model <m> --mode accept-edits [--dangerously-skip-permissions] [--conversation <id>]`
-//   - resume id -> the Antigravity conversation UUID, captured from the new
-//                  `<antigravityHome>/conversations/<uuid>.db` that appears after launch.
+//   - hooks     -> <cwd>/.agents/hooks.json -> activity-relay.cjs
+//   - launch    -> hosts `antigravity-runner.js` in the seat's tmux pane to tail
+//                  `<appDataDir>/brain/<uuid>/.system_generated/logs/transcript.jsonl`
+//   - Turn #1   -> `agentapi new-conversation [--model=<flash_lite|flash|pro>] --title=<...> <bootstrap>`
+//                  delivered atomically by `sendInteractiveText()` on Step 6b
+//   - Follow-up -> `agentapi send-message <uuid> <content>`
 
 import nodePath from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
 import { shellQuote } from "./shell-quote.js";
-import { yoloEnabled } from "./yolo-mode.js";
 import type {
-  RuntimeAdapter, NodeBinding, ResolvedStartupFile,
-  InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
-  HarnessLaunchResult, ForkSource,
+  RuntimeAdapter,
+  NodeBinding,
+  ResolvedStartupFile,
+  InstalledResource,
+  ProjectionResult,
+  StartupDeliveryResult,
+  ReadinessResult,
+  HarnessLaunchResult,
+  ForkSource,
 } from "../domain/runtime-adapter.js";
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
-
-import os from "node:os";
-import { randomUUID } from "node:crypto";
+import {
+  AgentApiClient,
+  type AgentApiExecFn,
+  resolveAgentApiBinary,
+  resolveAntigravityAppDataDir,
+} from "./antigravity-agentapi-client.js";
+import {
+  antigravityRunnerStatePath,
+  parseAntigravityRunnerState,
+  type AntigravityRunnerState,
+} from "./antigravity-runner.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
-const CONVERSATION_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.db$/i;
-const LOGIN_GATE_RE = /(sign in|log in|login required|authenticate|not authenticated)/i;
-const TRUST_GATE_RE = /(trust (this|the) (folder|workspace|directory)|do you trust)/i;
 
 export interface AntigravityFsOps {
   readFile(path: string): string;
@@ -35,46 +50,80 @@ export interface AntigravityFsOps {
   exists(path: string): boolean;
   mkdirp(path: string): void;
   listFiles?(dirPath: string): string[];
-  /** File names directly inside a directory (no recursion). Absent = capture disabled. */
   listDir?(dirPath: string): string[];
 }
 
 export interface AntigravityRuntimeAdapterDeps {
   tmux: TmuxAdapter;
   fsOps: AntigravityFsOps;
-  /** Antigravity CLI state root. Default: ~/.gemini/antigravity-cli */
-  antigravityHome: string;
-  /** Executable to launch. Default: `agy` (resolved from PATH). */
-  binary?: string;
+  /** Antigravity IDE app data root. Default: ~/.gemini/antigravity */
+  appDataDir?: string;
+  /** OpenRig home directory. Default: ~/.openrig */
+  openrigHome?: string;
+  /** State root for per-seat runner sidecars. Default: <openrigHome>/state/antigravity */
+  stateRoot?: string;
+  /** Compiled antigravity-runner.js entry path. When omitted (hermetic unit tests), uses in-memory/fs sidecar readiness. */
+  runnerEntryPath?: string;
+  /** Path to `agentapi` executable. Default: <appDataDir>/bin/agentapi */
+  agentapiBinary?: string;
+  /** Optional pre-configured AgentApiClient (or custom exec hook for tests). */
+  client?: AgentApiClient;
+  execFileAsync?: AgentApiExecFn;
   sleep?: (ms: number) => Promise<void>;
-  /** Default model when the seat does not choose one. */
+  /** Default model when the seat does not specify one (omitted = Antigravity IDE default). */
   defaultModel?: string;
   /** Path to activity-relay.cjs script to wire Antigravity lifecycle hooks. */
   activityRelayPath?: string;
   /** Directory where Antigravity project JSON files live (~/.gemini/config/projects). */
   configProjectsDir?: string;
+  newLaunchId?: () => string;
 }
 
 export class AntigravityRuntimeAdapter implements RuntimeAdapter {
   readonly runtime = "antigravity";
-  private tmux: TmuxAdapter;
-  private fs: AntigravityFsOps;
-  private home: string;
-  private binary: string;
-  private sleep: (ms: number) => Promise<void>;
-  private defaultModel?: string;
-  private activityRelayPath?: string;
-  private configProjectsDir: string;
+  readonly client: AgentApiClient;
+  private readonly tmux: TmuxAdapter;
+  private readonly fs: AntigravityFsOps;
+  private readonly appDataDir: string;
+  private readonly openrigHome: string;
+  private readonly stateRoot: string;
+  private readonly runnerEntryPath?: string;
+  private readonly agentapiBinary: string;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly defaultModel?: string;
+  private readonly activityRelayPath?: string;
+  private readonly newLaunchId: () => string;
 
   constructor(deps: AntigravityRuntimeAdapterDeps) {
     this.tmux = deps.tmux;
     this.fs = deps.fsOps;
-    this.home = deps.antigravityHome;
-    this.binary = deps.binary ?? "agy";
+    this.appDataDir = resolveAntigravityAppDataDir({ appDataDir: deps.appDataDir });
+    this.agentapiBinary = resolveAgentApiBinary({
+      agentapiBinary: deps.agentapiBinary,
+      appDataDir: this.appDataDir,
+    });
+    this.openrigHome =
+      deps.openrigHome ??
+      process.env["OPENRIG_HOME"]?.trim() ??
+      nodePath.join(os.homedir(), ".openrig");
+    this.stateRoot = deps.stateRoot ?? nodePath.join(this.openrigHome, "state", "antigravity");
+    this.runnerEntryPath = deps.runnerEntryPath;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.defaultModel = deps.defaultModel ?? "gemini-3.8-flash-medium";
+    this.defaultModel = deps.defaultModel;
     this.activityRelayPath = deps.activityRelayPath;
-    this.configProjectsDir = deps.configProjectsDir ?? nodePath.join(os.homedir(), ".gemini", "config", "projects");
+    this.newLaunchId = deps.newLaunchId ?? (() => randomUUID());
+
+    this.client =
+      deps.client ??
+      new AgentApiClient({
+        agentapiBinary: this.agentapiBinary,
+        appDataDir: this.appDataDir,
+        openrigHome: this.openrigHome,
+        configProjectsDir:
+          deps.configProjectsDir ?? nodePath.join(os.homedir(), ".gemini", "config", "projects"),
+        fsOps: this.fs,
+        execFileAsync: deps.execFileAsync,
+      });
   }
 
   skillTargetPath(_tmuxSession: string | null, _effectiveId: string): string | null {
@@ -86,7 +135,11 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     const skillsDir = nodePath.join(binding.cwd, ".agents", "skills");
     if (this.fs.exists(skillsDir) && this.fs.listFiles) {
       for (const file of this.fs.listFiles(skillsDir)) {
-        results.push({ effectiveId: file, category: "skill", installedPath: nodePath.join(skillsDir, file) });
+        results.push({
+          effectiveId: file,
+          category: "skill",
+          installedPath: nodePath.join(skillsDir, file),
+        });
       }
     }
     return results;
@@ -99,7 +152,8 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     const warnings: string[] = [];
     const failed: Array<{ effectiveId: string; error: string }> = [];
     for (const entry of plan.entries) {
-      const directorySkill = entry.category === "skill" && this.fs.exists(nodePath.join(entry.absolutePath, "SKILL.md"));
+      const directorySkill =
+        entry.category === "skill" && this.fs.exists(nodePath.join(entry.absolutePath, "SKILL.md"));
       if (entry.classification === "no_op" && !directorySkill) {
         skipped.push(entry.effectiveId);
         continue;
@@ -114,7 +168,11 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
+  async deliverStartup(
+    files: ResolvedStartupFile[],
+    binding: NodeBinding,
+    sendInteractiveText?: (text: string) => Promise<void>,
+  ): Promise<StartupDeliveryResult> {
     const warnings: string[] = [];
     const failed: Array<{ path: string; error: string }> = [];
     let delivered = 0;
@@ -123,28 +181,24 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
         const content = this.fs.readFile(file.absolutePath);
         const hint = file.deliveryHint === "auto" ? resolveConcreteHint(file.path, content) : file.deliveryHint;
         if (hint === "guidance_merge") {
-          if (!this.mergeGuidance(nodePath.join(binding.cwd, "AGENTS.md"), file.path, content, warnings)) continue;
+          if (!this.mergeGuidance(nodePath.join(binding.cwd, "AGENTS.md"), file.path, content, warnings)) {
+            continue;
+          }
         } else if (hint === "skill_install") {
-          const dir = nodePath.join(binding.cwd, ".agents", "skills", nodePath.basename(nodePath.dirname(file.absolutePath)));
+          const dir = nodePath.join(
+            binding.cwd,
+            ".agents",
+            "skills",
+            nodePath.basename(nodePath.dirname(file.absolutePath)),
+          );
           this.fs.mkdirp(dir);
           this.fs.writeFile(nodePath.join(dir, nodePath.basename(file.path)), content);
         } else if (binding.tmuxSession) {
           if (sendInteractiveText) {
             await sendInteractiveText(content);
           } else {
-            const sent = await this.tmux.sendText(binding.tmuxSession, content);
-            if (!sent.ok) throw new Error(sent.message);
-            await this.sleep(200);
-            const submit = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-            if (!submit.ok) throw new Error(submit.message);
-          }
-          // Asynchronously mirror startup prompt to Antigravity IDE conversation
-          try {
-            const { AntigravityAgentApiMirror } = await import("./antigravity-agentapi-mirror.js");
-            const mirror = new AntigravityAgentApiMirror({ configProjectsDir: this.configProjectsDir });
-            mirror.sendMessage(binding.tmuxSession, content).catch(() => {});
-          } catch {
-            // best-effort
+            const direct = await this.sendInteractiveText(binding, content);
+            if (!direct.ok) throw new Error(direct.error);
           }
         }
         delivered++;
@@ -159,229 +213,272 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     binding: NodeBinding,
     opts: { name: string; resumeToken?: string; forkSource?: ForkSource },
   ): Promise<HarnessLaunchResult> {
-    if (!binding.tmuxSession) return { ok: false, error: "No tmux session bound — cannot launch the Antigravity harness" };
-    if (opts.resumeToken && opts.forkSource) return { ok: false, error: "resumeToken and forkSource are mutually exclusive — pick one" };
-    if (opts.forkSource) {
-      return { ok: false, error: "antigravity runtime has no native fork primitive; remove session_source for antigravity members" };
+    if (!binding.tmuxSession) {
+      return { ok: false, error: "No tmux session bound — cannot launch the Antigravity harness" };
     }
+    if (opts.resumeToken && opts.forkSource) {
+      return { ok: false, error: "resumeToken and forkSource are mutually exclusive — pick one" };
+    }
+    if (opts.forkSource) {
+      return {
+        ok: false,
+        error: "antigravity runtime has no native fork primitive; remove session_source for antigravity members",
+      };
+    }
+
+    let validatedResumeToken: string | null = null;
     if (opts.resumeToken) {
       const validation = validateResumeToken(this.runtime, opts.resumeToken);
       if (!validation.ok) return { ok: false, error: `antigravity resume: ${validation.error}` };
-      if (!this.fs.exists(nodePath.join(this.home, "conversations", `${validation.token}.db`))) {
-        return { ok: false, error: "antigravity resume: the conversation no longer exists", recovery: "retry_fresh", missingConversation: true };
+      const exists = await this.client.conversationExists(validation.token);
+      if (!exists) {
+        return {
+          ok: false,
+          error: "antigravity resume: the conversation no longer exists",
+          recovery: "retry_fresh",
+          missingConversation: true,
+        };
+      }
+      validatedResumeToken = validation.token;
+    }
+
+    this.ensureAntigravityActivityHooks(binding.cwd);
+
+    const sessionName = binding.tmuxSession;
+    const rigOrPod = sessionName.includes("@")
+      ? sessionName.split("@")[1]!
+      : binding.nodeId && binding.nodeId.includes(".")
+        ? binding.nodeId.split(".")[0]!
+        : opts.name || "default";
+    const projectId = this.findOrCreateProject(rigOrPod, binding.cwd);
+
+    const envNodeId = await this.readSessionEnvSafe(sessionName, "OPENRIG_NODE_ID");
+    const envGeneration = await this.readSessionEnvSafe(sessionName, "OPENRIG_OCCUPANT_GENERATION");
+    const nodeId = envNodeId || binding.nodeId || opts.name || sessionName;
+    const occupantGeneration = binding.launchGeneration ?? envGeneration ?? null;
+    const model = binding.model ?? this.defaultModel;
+    const title = opts.name
+      ? `OpenRig: ${opts.name} (${rigOrPod})`
+      : `OpenRig: ${sessionName}`;
+
+    const statePath = antigravityRunnerStatePath(this.stateRoot, sessionName);
+    const initialState: AntigravityRunnerState = {
+      launchId: this.newLaunchId(),
+      sessionName,
+      nodeId,
+      occupantGeneration,
+      projectId,
+      cwd: binding.cwd,
+      title,
+      ...(model ? { model } : {}),
+      conversationId: validatedResumeToken,
+      status: this.runnerEntryPath ? "starting" : "ready",
+      updatedAt: new Date().toISOString(),
+    };
+    this.writeRunnerState(statePath, initialState);
+
+    if (validatedResumeToken) {
+      this.client.registerSeatConversation({
+        conversationId: validatedResumeToken,
+        sessionName,
+        nodeId,
+        occupantGeneration,
+        projectId,
+        cwd: binding.cwd,
+        title,
+      });
+    }
+
+    if (this.runnerEntryPath) {
+      if (!this.fs.exists(this.runnerEntryPath)) {
+        return {
+          ok: false,
+          error: `antigravity runner entry missing at ${this.runnerEntryPath}`,
+        };
+      }
+      const cmdParts = [
+        shellQuote(process.execPath),
+        shellQuote(this.runnerEntryPath),
+        "--state-file",
+        shellQuote(statePath),
+        "--app-data-dir",
+        shellQuote(this.appDataDir),
+        "--agentapi-bin",
+        shellQuote(this.agentapiBinary),
+        "--openrig-home",
+        shellQuote(this.openrigHome),
+      ];
+      const sent = await this.tmux.sendShellCommand(
+        sessionName,
+        `exec ${cmdParts.join(" ")}`,
+        undefined,
+        { stageIfLong: true },
+      );
+      if (!sent.ok) {
+        return { ok: false, error: `Failed to launch antigravity runner: ${sent.message}` };
+      }
+
+      const ready = await this.waitForReady(binding);
+      if (!ready.ready) {
+        const pane = (await this.tmux.capturePaneContent(sessionName, 40)) ?? "";
+        return {
+          ok: false,
+          error: `antigravity launch failed: ${ready.reason ?? "runner not ready"}`,
+          recovery: "attention_required",
+          evidence: pane.split("\n").slice(-12).join("\n"),
+        };
       }
     }
 
-    this.trustWorkspace(binding.cwd);
-    this.ensureAntigravityActivityHooks(binding.cwd);
-    const before = this.listConversationIds();
-    const bypass = yoloEnabled(process.env, binding.launchPosture);
-    const model = binding.model ?? this.defaultModel;
-    const parts = [this.binary];
-    if (model) parts.push("--model", shellQuote(model));
-    if (binding.effort) parts.push("--effort", shellQuote(binding.effort));
-    parts.push("--mode", bypass || binding.launchPosture === "auto" ? "auto" : "accept-edits");
-    if (bypass) parts.push("--dangerously-skip-permissions");
-
-    const podName = opts.name && opts.name.includes("@")
-      ? opts.name.split("@")[1]!
-      : (binding.nodeId && binding.nodeId.includes(".") ? binding.nodeId.split(".")[0]! : opts.name || "default");
-    const projectId = this.findOrCreateProject(podName, binding.cwd);
-    parts.push("--project", shellQuote(projectId));
-
-    if (opts.resumeToken) parts.push("--conversation", shellQuote(opts.resumeToken));
-
-    const sent = await this.tmux.sendShellCommand(binding.tmuxSession, parts.join(" "), undefined, { stageIfLong: true, execInScript: true });
-    if (!sent.ok) return { ok: false, error: `Failed to send launch command: ${sent.message}` };
-
-    const ready = await this.waitForReady(binding.tmuxSession);
-    if (!ready.ready) {
-      const pane = (await this.tmux.capturePaneContent(binding.tmuxSession, 40)) ?? "";
-      return {
-        ok: false,
-        error: `antigravity launch failed: ${ready.reason ?? "not ready"}`,
-        recovery: "attention_required",
-        evidence: pane.split("\n").slice(-12).join("\n"),
-      };
+    if (validatedResumeToken) {
+      return { ok: true, resumeToken: validatedResumeToken, resumeType: "antigravity_id" };
     }
-    // Asynchronously ensure a mirrored conversation in Antigravity IDE
-    try {
-      const { AntigravityAgentApiMirror } = await import("./antigravity-agentapi-mirror.js");
-      const mirror = new AntigravityAgentApiMirror({ configProjectsDir: this.configProjectsDir });
-      mirror.ensureConversation(binding.tmuxSession, {
-        rig: podName,
-        pod: podName,
-        role: opts.name,
-        cwd: binding.cwd,
-        model,
-        prompt: `OpenRig agent online: ${opts.name || binding.tmuxSession}\nSession: ${binding.tmuxSession}\nRig/Pod: ${podName}\nRole: ${opts.name}\nDirectory: ${binding.cwd}\nReady for interaction and task dispatch.`
-      }).catch(() => {});
-    } catch {
-      // best-effort
-    }
-
-    if (opts.resumeToken) return { ok: true, resumeToken: opts.resumeToken, resumeType: "antigravity_id" };
-    // A fresh conversation's database is created lazily; capture it if it already exists.
-    const created = await this.captureNewConversation(before);
-    return created ? { ok: true, resumeToken: created, resumeType: "antigravity_id" } : { ok: true };
+    return { ok: true };
   }
 
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
     if (!binding.tmuxSession) return { ready: false, reason: "No tmux session bound" };
-    if (!(await this.tmux.hasSession(binding.tmuxSession))) return { ready: false, reason: "tmux session not responsive" };
-    const paneCommand = (await this.tmux.getPaneCommand(binding.tmuxSession)) ?? "";
-    if (SHELL_COMMANDS.has(paneCommand)) {
-      return { ready: false, reason: "pane is at a shell; the agy process is not running", code: "awaiting_runtime" };
+    if (!(await this.tmux.hasSession(binding.tmuxSession))) {
+      return { ready: false, reason: "tmux session not responsive" };
     }
-    const content = (await this.tmux.capturePaneContent(binding.tmuxSession, 40)) ?? "";
-    if (TRUST_GATE_RE.test(content)) return { ready: false, reason: "agy is asking to trust the workspace", code: "trust_gate" };
-    if (LOGIN_GATE_RE.test(content) && !/\bagy\b.*>/.test(content)) {
-      return { ready: false, reason: "agy requires sign-in; run `agy` once interactively to authenticate", code: "login_required" };
+
+    const statePath = antigravityRunnerStatePath(this.stateRoot, binding.tmuxSession);
+    const runnerState = this.readRunnerState(statePath);
+
+    if (this.runnerEntryPath) {
+      const paneCommand = (await this.tmux.getPaneCommand(binding.tmuxSession)) ?? "";
+      if (SHELL_COMMANDS.has(paneCommand)) {
+        return {
+          ready: false,
+          reason: "pane is at a shell; the antigravity runner is not running",
+          code: "awaiting_runtime",
+        };
+      }
     }
-    if (content.trim().length === 0) return { ready: false, reason: "agy has not rendered yet", code: "awaiting_runtime" };
+
+    if (!runnerState) {
+      if (!this.runnerEntryPath && this.client.isAvailable()) {
+        return { ready: true };
+      }
+      return {
+        ready: false,
+        reason: "antigravity runner state sidecar has not materialized yet",
+        code: "awaiting_runtime",
+      };
+    }
+
+    if (runnerState.status === "error") {
+      return {
+        ready: false,
+        reason: runnerState.error ?? "antigravity runner reported an error",
+        code: "login_required",
+      };
+    }
+    if (runnerState.status === "exited") {
+      return {
+        ready: false,
+        reason: "antigravity runner exited",
+        code: "awaiting_runtime",
+      };
+    }
+    if (runnerState.status !== "ready") {
+      return {
+        ready: false,
+        reason: "antigravity runner is still starting",
+        code: "awaiting_runtime",
+      };
+    }
     return { ready: true };
   }
 
-  // ── internals ──────────────────────────────────────────────────────────────
-
-  private async waitForReady(session: string): Promise<ReadinessResult> {
-    let last: ReadinessResult = { ready: false, reason: "agy has not rendered yet", code: "awaiting_runtime" };
-    for (let attempt = 0; attempt < 60; attempt++) {
-      last = await this.checkReady({ tmuxSession: session } as NodeBinding);
-      if (last.ready || (last.code && last.code !== "awaiting_runtime")) return last;
-      await this.sleep(250);
-    }
-    return last;
-  }
-
-  private listConversationIds(): Set<string> {
-    const ids = new Set<string>();
-    const dir = nodePath.join(this.home, "conversations");
-    if (!this.fs.listDir || !this.fs.exists(dir)) return ids;
-    for (const name of this.fs.listDir(dir)) {
-      const m = CONVERSATION_FILE_RE.exec(name);
-      if (m) ids.add(m[1]!.toLowerCase());
-    }
-    return ids;
-  }
-
-  private async captureNewConversation(before: Set<string>): Promise<string | null> {
-    for (let attempt = 0; attempt < 20; attempt++) {
-      for (const id of this.listConversationIds()) if (!before.has(id)) return id;
-      await this.sleep(250);
-    }
-    return null;
-  }
-
-  /** Pre-trust the seat workspace so agy does not stop at its trust prompt. */
-  private trustWorkspace(cwd: string): void {
-    const settingsPath = nodePath.join(this.home, "settings.json");
-    try {
-      const settings = this.fs.exists(settingsPath)
-        ? (JSON.parse(this.fs.readFile(settingsPath)) as Record<string, unknown>)
-        : {};
-      const trusted = Array.isArray(settings["trustedWorkspaces"]) ? (settings["trustedWorkspaces"] as string[]) : [];
-      if (trusted.includes(cwd)) return;
-      this.fs.mkdirp(this.home);
-      this.fs.writeFile(settingsPath, JSON.stringify({ ...settings, trustedWorkspaces: [...trusted, cwd] }, null, 2));
-    } catch {
-      // Best-effort: a trust prompt is surfaced as attention_required by checkReady.
-    }
-  }
-
-  private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {
-    if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
-      return this.mergeGuidance(nodePath.join(binding.cwd, "AGENTS.md"), entry.effectiveId, this.fs.readFile(entry.absolutePath), warnings);
-    }
-    if (entry.category === "skill") {
-      const targetDir = nodePath.join(binding.cwd, ".agents", "skills", entry.effectiveId);
-      this.fs.mkdirp(targetDir);
-      let files: string[] = [];
-      if (this.fs.listFiles) {
-        try { files = this.fs.listFiles(entry.absolutePath); } catch { files = []; }
-      }
-      if (files.length > 0) {
-        for (const file of files) {
-          const dest = nodePath.join(targetDir, file);
-          this.fs.mkdirp(nodePath.dirname(dest));
-          this.fs.writeFile(dest, this.fs.readFile(nodePath.join(entry.absolutePath, file)));
-        }
-      } else {
-        this.fs.writeFile(nodePath.join(targetDir, nodePath.basename(entry.absolutePath)), this.fs.readFile(entry.absolutePath));
-      }
-      return true;
-    }
-    return false;
-  }
-
-  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
-    // Per-seat rig-role content collides across pod-mates in a shared cwd; it is delivered via send_text.
-    if (blockId === "rig-role") return false;
-    mergeManagedBlock(this.fs, targetPath, blockId, content, {
-      warnings,
-      replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
-    });
-    return true;
-  }
-
   /**
-   * Ensure the project named "OpenRig - <podName>" exists in ~/.gemini/config/projects/,
-   * creating its configuration file if missing.
+   * Direct programmatic `agentapi` prompt delivery called by StartupOrchestrator.
+   * On fresh launch (`conversationId === null`), creates the single canonical
+   * Antigravity IDE conversation with the full OpenRig bootstrap prompt as Turn #1.
+   * On subsequent prompts or restored seats, sends via `agentapi send-message`.
    */
-  findOrCreateProject(podName: string, cwd: string): string {
-    const rawPod = (podName || "workspace").trim();
-    const targetName = rawPod.startsWith("OpenRig - ") ? rawPod : `OpenRig - ${rawPod}`;
-    try {
-      this.fs.mkdirp(this.configProjectsDir);
-      const files = this.fs.listDir ? this.fs.listDir(this.configProjectsDir) : [];
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-        try {
-          const content = this.fs.readFile(nodePath.join(this.configProjectsDir, file));
-          const parsed = JSON.parse(content) as { id?: string; name?: string };
-          if (parsed && parsed.name === targetName && parsed.id) {
-            return parsed.id;
-          }
-        } catch {
-          // ignore corrupted or unreadable project file
-        }
+  async sendInteractiveText(
+    binding: NodeBinding,
+    text: string,
+  ): Promise<{ ok: true; resumeToken?: string; resumeType?: string } | { ok: false; error: string }> {
+    const sessionName = binding.tmuxSession;
+    if (!sessionName) {
+      return { ok: false, error: "No tmux session bound for Antigravity interactive delivery" };
+    }
+
+    const statePath = antigravityRunnerStatePath(this.stateRoot, sessionName);
+    const state = this.readRunnerState(statePath);
+    const rigOrPod = sessionName.includes("@") ? sessionName.split("@")[1]! : "workspace";
+    const projectId = state?.projectId ?? this.findOrCreateProject(rigOrPod, binding.cwd);
+    const title = state?.title ?? `OpenRig: ${sessionName}`;
+    const model = binding.model ?? state?.model ?? this.defaultModel;
+    const nodeId = state?.nodeId ?? binding.nodeId ?? sessionName;
+    const occupantGeneration = state?.occupantGeneration ?? binding.launchGeneration ?? null;
+
+    if (!state?.conversationId) {
+      const created = await this.client.newConversation({
+        projectId,
+        title,
+        model,
+        prompt: text,
+      });
+      if (!created.ok) {
+        return { ok: false, error: created.error };
       }
-    } catch {
-      // ignore
+
+      const nextState: AntigravityRunnerState = {
+        launchId: state?.launchId ?? this.newLaunchId(),
+        sessionName,
+        nodeId,
+        occupantGeneration,
+        projectId,
+        cwd: binding.cwd,
+        title,
+        ...(model ? { model } : {}),
+        conversationId: created.conversationId,
+        status: state?.status ?? "ready",
+        ...(state?.pid ? { pid: state.pid } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      this.writeRunnerState(statePath, nextState);
+      this.client.registerSeatConversation({
+        conversationId: created.conversationId,
+        sessionName,
+        nodeId,
+        occupantGeneration,
+        projectId,
+        cwd: binding.cwd,
+        title,
+      });
+
+      return {
+        ok: true,
+        resumeToken: created.conversationId,
+        resumeType: "antigravity_id",
+      };
     }
 
-    // Not found — create a new project
-    const newId = randomUUID();
-    const newProject = {
-      id: newId,
-      name: targetName,
-      projectResources: {
-        resources: [
-          {
-            gitFolder: {
-              folderUri: `file://${nodePath.resolve(cwd)}`,
-            },
-          },
-        ],
-      },
-      permissionGrants: {
-        v2Migrated: true,
-      },
-      settings: {},
-      isWorkspaceOnly: false,
+    const sent = await this.client.sendMessage(state.conversationId, text);
+    if (!sent.ok) {
+      return { ok: false, error: sent.error };
+    }
+    return {
+      ok: true,
+      resumeToken: state.conversationId,
+      resumeType: "antigravity_id",
     };
+  }
 
-    try {
-      this.fs.mkdirp(this.configProjectsDir);
-      this.fs.writeFile(
-        nodePath.join(this.configProjectsDir, `${newId}.json`),
-        JSON.stringify(newProject, null, 2),
-      );
-    } catch {
-      // Best-effort
-    }
+  getConversationIdForSession(sessionName: string): string | null {
+    const statePath = antigravityRunnerStatePath(this.stateRoot, sessionName);
+    const state = this.readRunnerState(statePath);
+    if (state?.conversationId) return state.conversationId;
+    return this.client.lookupBySessionName(sessionName)?.conversationId ?? null;
+  }
 
-    return newId;
+  /** Ensure project `"OpenRig - <podName>"` exists in `~/.gemini/config/projects/`. */
+  findOrCreateProject(podName: string, cwd: string): string {
+    return this.client.resolveOrCreateProject(cwd, podName);
   }
 
   /**
@@ -447,5 +544,97 @@ export class AntigravityRuntimeAdapter implements RuntimeAdapter {
     } catch {
       // Best-effort
     }
+  }
+
+  // ── internals ──────────────────────────────────────────────────────────────
+
+  private async waitForReady(binding: NodeBinding): Promise<ReadinessResult> {
+    let last: ReadinessResult = {
+      ready: false,
+      reason: "antigravity runner has not started yet",
+      code: "awaiting_runtime",
+    };
+    for (let attempt = 0; attempt < 60; attempt++) {
+      last = await this.checkReady(binding);
+      if (last.ready || (last.code && last.code !== "awaiting_runtime")) return last;
+      await this.sleep(150);
+    }
+    return last;
+  }
+
+  private readRunnerState(statePath: string): AntigravityRunnerState | null {
+    try {
+      if (!this.fs.exists(statePath)) return null;
+      return parseAntigravityRunnerState(this.fs.readFile(statePath));
+    } catch {
+      return null;
+    }
+  }
+
+  private writeRunnerState(statePath: string, state: AntigravityRunnerState): void {
+    try {
+      this.fs.mkdirp(nodePath.dirname(statePath));
+      this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
+    } catch {
+      // Best-effort
+    }
+  }
+
+  private async readSessionEnvSafe(session: string, key: string): Promise<string | undefined> {
+    try {
+      const fn = (this.tmux as unknown as { getSessionEnv?: (s: string, k: string) => Promise<string | undefined> })
+        .getSessionEnv;
+      if (typeof fn === "function") return await fn.call(this.tmux, session, key);
+    } catch {
+      // ignore missing mock / tmux env lookup failure
+    }
+    return undefined;
+  }
+
+  private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {
+    if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
+      return this.mergeGuidance(
+        nodePath.join(binding.cwd, "AGENTS.md"),
+        entry.effectiveId,
+        this.fs.readFile(entry.absolutePath),
+        warnings,
+      );
+    }
+    if (entry.category === "skill") {
+      const targetDir = nodePath.join(binding.cwd, ".agents", "skills", entry.effectiveId);
+      this.fs.mkdirp(targetDir);
+      let files: string[] = [];
+      if (this.fs.listFiles) {
+        try {
+          files = this.fs.listFiles(entry.absolutePath);
+        } catch {
+          files = [];
+        }
+      }
+      if (files.length > 0) {
+        for (const file of files) {
+          const dest = nodePath.join(targetDir, file);
+          this.fs.mkdirp(nodePath.dirname(dest));
+          this.fs.writeFile(dest, this.fs.readFile(nodePath.join(entry.absolutePath, file)));
+        }
+      } else {
+        this.fs.writeFile(
+          nodePath.join(targetDir, nodePath.basename(entry.absolutePath)),
+          this.fs.readFile(entry.absolutePath),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
+    // Per-seat rig-role content collides across pod-mates in a shared cwd; it is delivered via send_text.
+    if (blockId === "rig-role") return false;
+    mergeManagedBlock(this.fs, targetPath, blockId, content, {
+      warnings,
+      replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
+    });
+    return true;
   }
 }

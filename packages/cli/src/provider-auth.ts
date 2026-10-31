@@ -120,28 +120,40 @@ export function checkCodexAuth(deps: ProviderAuthDeps, installed: boolean): Prov
   }
 }
 
-/** Google Antigravity: the native `agy` CLI keeps its OAuth token in `~/.gemini/antigravity-cli`.
- *  Optional runtime, so an absent CLI is skipped rather than failed. */
+function resolveAntigravityPaths(env: NodeJS.ProcessEnv): { appDataDir: string; agentapiBin: string } {
+  const appDataDir = env.ANTIGRAVITY_APP_DATA_DIR?.trim() || path.join(env.HOME ?? "", ".gemini", "antigravity");
+  const agentapiBin =
+    env.ANTIGRAVITY_AGENTAPI_BIN?.trim() ||
+    env.OPENRIG_AGENTAPI_BIN?.trim() ||
+    path.join(appDataDir, "bin", "agentapi");
+  return { appDataDir, agentapiBin };
+}
+
+/** Google Antigravity: uses the Antigravity IDE / Language Server `agentapi` bridge (`~/.gemini/antigravity/bin/agentapi`)
+ *  and IDE state in `~/.gemini/antigravity`. Optional runtime, so an absent CLI is skipped rather than failed. */
 export function checkAntigravityAuth(deps: ProviderAuthDeps, installed: boolean): ProviderCheck {
   if (!installed) {
     return {
       name: "antigravity_auth",
       status: "skipped",
-      message: "Skipped: Google Antigravity (agy) is not installed.",
-      reason: "Authentication cannot be checked until the agy CLI is installed.",
+      message: "Skipped: Google Antigravity (agentapi) is not installed.",
+      reason: "Authentication cannot be checked until Antigravity IDE (agentapi) is installed.",
     };
   }
   const env = deps.env ?? process.env;
-  const home = env.ANTIGRAVITY_CLI_HOME?.trim() || path.join(env.HOME ?? "", ".gemini", "antigravity-cli");
-  if (deps.readFile(path.join(home, "antigravity-oauth-token")) !== null) {
-    return { name: "antigravity_auth", status: "pass", message: "Google Antigravity authentication available." };
+  const { appDataDir } = resolveAntigravityPaths(env);
+  if (
+    deps.readFile(path.join(appDataDir, "antigravity_state.pbtxt")) !== null ||
+    deps.readFile(path.join(appDataDir, "user_settings.pb")) !== null
+  ) {
+    return { name: "antigravity_auth", status: "pass", message: "Google Antigravity IDE state available." };
   }
   return {
     name: "antigravity_auth",
-    status: "warn",
-    message: "Google Antigravity (agy) is installed but not signed in.",
-    reason: "Antigravity seats cannot launch until agy has been signed in.",
-    fix: "Run `agy` once and complete the Google sign-in, then rerun `rig setup`.",
+    status: "fail",
+    message: "Google Antigravity (agentapi) is installed but IDE user state was not found.",
+    reason: "Antigravity seats require an initialized and signed-in Antigravity IDE installation.",
+    fix: "Open Antigravity IDE once and complete Google sign-in, then rerun `rig setup`.",
   };
 }
 
@@ -166,15 +178,12 @@ export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] 
     }
     checks.push(auth(deps, installed));
   }
-  // Optional third runtime: reported only when its CLI is authentically present, so existing setups see no new failure.
-  try {
-    const out = deps.exec("agy --help");
-    if (/Usage of agy:|antigravity/i.test(out)) {
-      checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity available." });
-      checks.push(checkAntigravityAuth(deps, true));
-    }
-  } catch {
-    // agy not installed: nothing to report.
+  // Optional third runtime: reported only when its local agentapi bridge script is present,
+  // avoiding subprocess probes for unconfigured hosts while surfacing IDE state readiness when installed.
+  const { agentapiBin } = resolveAntigravityPaths(deps.env ?? process.env);
+  if (deps.readFile(agentapiBin) !== null) {
+    checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity (agentapi) available." });
+    checks.push(checkAntigravityAuth(deps, true));
   }
   return checks;
 }

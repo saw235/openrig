@@ -124,9 +124,10 @@ export class RuntimeVerifier {
     return result;
   }
 
-  /** Google Antigravity: the native `agy` CLI (`agy --version`, fallback `agy --help`). */
+  /** Google Antigravity: the local Antigravity IDE/server `agentapi` CLI (`agentapi --help`). */
   async verifyAntigravity(): Promise<RuntimeVerification> {
-    const result = await this.verifyVersionOrHelp("agy", "antigravity");
+    const { resolveAgentApiBinary } = await import("../adapters/antigravity-agentapi-client.js");
+    const result = await this.verifyVersionOrHelp(resolveAgentApiBinary(), "antigravity");
     this.persist(result);
     return result;
   }

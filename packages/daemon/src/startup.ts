@@ -837,20 +837,30 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
   const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath, usageFactsEnabled: piUsageFactsEnabled, openRouterChargeEnabled: piOpenRouterChargeEnabled });
   const ompAdapter = new OmpRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: (a: string, b: string) => fs.copyFileSync(a, b), chmod: (p: string, m: number) => fs.chmodSync(p, m), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; } }, operatorOmpAgentDir: process.env.OMP_OPERATOR_AGENT_DIR ?? nodePath.join(os.homedir(), ".omp", "agent"), stateRoot: ompStateRoot, runnerEntryPath: piRunnerEntryPath });
+  const { AgentApiClient } = await import("./adapters/antigravity-agentapi-client.js");
   const { AntigravityRuntimeAdapter } = await import("./adapters/antigravity-runtime-adapter.js");
+  const antigravityStateRoot = nodePath.join(OPENRIG_HOME, "state", "antigravity");
+  const antigravityRunnerEntryPath = nodePath.resolve(import.meta.dirname, "./adapters/antigravity-runner.js");
+  const antigravityFsOps = {
+    readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+    writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"),
+    exists: (p: string) => fs.existsSync(p),
+    mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }),
+    listDir: (p: string) => fs.readdirSync(p),
+    listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; },
+  };
+  const antigravityClient = new AgentApiClient({
+    openrigHome: OPENRIG_HOME,
+    fsOps: antigravityFsOps,
+  });
   const antigravityAdapter = new AntigravityRuntimeAdapter({
     tmux: tmuxAdapter,
-    antigravityHome: process.env.ANTIGRAVITY_CLI_HOME ?? nodePath.join(os.homedir(), ".gemini", "antigravity-cli"),
-    binary: process.env.OPENRIG_AGY_BIN,
+    client: antigravityClient,
+    openrigHome: OPENRIG_HOME,
+    stateRoot: antigravityStateRoot,
+    runnerEntryPath: antigravityRunnerEntryPath,
     activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"),
-    fsOps: {
-      readFile: (p: string) => fs.readFileSync(p, "utf-8"),
-      writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"),
-      exists: (p: string) => fs.existsSync(p),
-      mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }),
-      listDir: (p: string) => fs.readdirSync(p),
-      listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; },
-    },
+    fsOps: antigravityFsOps,
   });
   // OPR.0.5.1.1 — the stub runtime adapter (Pi-shaped node-script runner in a pane).
   // Same fsOps shape as Pi; the compiled runner entry lives in the daemon dist.
@@ -1369,6 +1379,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
         captureObserver: shadow.capture?.observer,
         runtimeAdapters: runtimeAdaptersMap,
+        antigravityClient,
         // transport.verify_input_box, read at each verified Claude Code or Codex send (absent or unreadable = off).
         verifyInputBox: () => {
           try { return new ContextPackSettingsStore().resolveOne("transport.verify_input_box").value === true; } catch { return false; }

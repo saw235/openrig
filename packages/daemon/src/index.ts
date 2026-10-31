@@ -3,10 +3,14 @@ import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 
-// Ensure standard user binary locations are present on PATH so that runtimes like agy, omp, etc. are always found
-const userLocalBin = path.join(os.homedir(), ".local", "bin");
-if (!process.env.PATH?.includes(userLocalBin)) {
-  process.env.PATH = `${userLocalBin}${path.delimiter}${process.env.PATH || ""}`;
+// Ensure standard user binary locations are present on PATH so that runtimes like agentapi, omp, etc. are always found
+for (const binDir of [
+  path.join(os.homedir(), ".local", "bin"),
+  path.join(os.homedir(), ".gemini", "antigravity", "bin"),
+]) {
+  if (!process.env.PATH?.split(path.delimiter).includes(binDir)) {
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH || ""}`;
+  }
 }
 
 import { endProbeGroupsOnStartupSignal, stopRuntimeProbes } from "./adapters/bounded-probe-exec.js";

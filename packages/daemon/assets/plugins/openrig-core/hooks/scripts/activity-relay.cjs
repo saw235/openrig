@@ -52,11 +52,68 @@ function getArgvEvent(argv = process.argv) {
   return null;
 }
 
+/**
+ * Resolve OpenRig seat identity from `<OPENRIG_HOME>/state/antigravity/conversations.json`
+ * when Antigravity IDE / Language Server runs `.agents/hooks.json` outside tmux
+ * (`ANTIGRAVITY_CONVERSATION_ID` or payload `conversationId` present, `OPENRIG_*` unset).
+ */
+function resolveAntigravityConversationSeat(providerPayload, env = process.env) {
+  const conversationId = firstString(
+    env.ANTIGRAVITY_CONVERSATION_ID,
+    providerPayload && providerPayload.conversationId,
+    providerPayload && providerPayload.conversation_id
+  );
+  if (!conversationId) return null;
+
+  const home = firstString(env.OPENRIG_HOME, env.RIGGED_HOME) || path.join(env.HOME || os.homedir(), ".openrig");
+  const indexPath = path.join(home, "state", "antigravity", "conversations.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    const record = parsed && parsed.byConversationId && parsed.byConversationId[conversationId];
+    if (record && typeof record === "object") {
+      return {
+        conversationId,
+        sessionName: firstString(record.sessionName),
+        nodeId: firstString(record.nodeId),
+        runtime: "antigravity",
+        occupantGeneration: firstString(record.occupantGeneration),
+      };
+    }
+  } catch {
+    // Missing or unreadable index — fall back to conversationId-only payload so daemon DB can resolve resume_token.
+  }
+
+  return {
+    conversationId,
+    sessionName: null,
+    nodeId: null,
+    runtime: "antigravity",
+    occupantGeneration: null,
+  };
+}
+
 function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date(), argv = process.argv) {
-  const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
-  const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
-  const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
-  const generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
+  let sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
+  let nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
+  let runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
+  let generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
+  let conversationId = firstString(
+    env.ANTIGRAVITY_CONVERSATION_ID,
+    providerPayload && providerPayload.conversationId,
+    providerPayload && providerPayload.conversation_id
+  );
+
+  if (!sessionName && !nodeId) {
+    const agSeat = resolveAntigravityConversationSeat(providerPayload, env);
+    if (agSeat) {
+      sessionName = agSeat.sessionName;
+      nodeId = agSeat.nodeId;
+      runtime = runtime || agSeat.runtime;
+      generation = generation || agSeat.occupantGeneration;
+      conversationId = conversationId || agSeat.conversationId;
+    }
+  }
+
   const hookEvent = firstString(
     getArgvEvent(argv),
     providerPayload.hookEvent,
@@ -66,7 +123,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     providerPayload.eventName
   );
 
-  if ((!sessionName && !nodeId) || !runtime || !hookEvent) return null;
+  if ((!sessionName && !nodeId && !conversationId) || !runtime || !hookEvent) return null;
 
   const subtype = firstString(
     providerPayload.subtype,
@@ -89,6 +146,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   return {
     sessionName,
     nodeId,
+    ...(conversationId ? { conversationId } : {}),
     runtime,
     generation,
     hookEvent,
@@ -176,14 +234,30 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
     providerPayload.session_id,
     providerPayload.sessionId,
     providerPayload.conversationId,
-    providerPayload.conversation_id
+    providerPayload.conversation_id,
+    env.ANTIGRAVITY_CONVERSATION_ID
   );
   if (!sessionId) return null;
 
-  const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
-  const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
-  const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
-  const generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
+  let sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
+  let nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
+  let runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
+  let generation = firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION);
+  let conversationId = firstString(
+    env.ANTIGRAVITY_CONVERSATION_ID,
+    providerPayload.conversationId,
+    providerPayload.conversation_id
+  );
+  if (!sessionName && !nodeId) {
+    const agSeat = resolveAntigravityConversationSeat(providerPayload, env);
+    if (agSeat) {
+      sessionName = agSeat.sessionName;
+      nodeId = agSeat.nodeId;
+      runtime = runtime || agSeat.runtime;
+      generation = generation || agSeat.occupantGeneration;
+      conversationId = conversationId || agSeat.conversationId;
+    }
+  }
   // How this session began (startup, resume, clear or compact). The daemon tells a resumed
   // conversation's new id from a /clear by it; it is absent from runtimes that do not report it.
   const source = firstString(providerPayload.source);
@@ -191,12 +265,13 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
   // it launched from another Claude sharing the seat's environment.
   const resumeLaunch = firstString(env.OPENRIG_RESUME_LAUNCH);
 
-  if ((!sessionName && !nodeId) || !runtime) return null;
+  if ((!sessionName && !nodeId && !conversationId) || !runtime) return null;
 
   return {
     eventFamily: "session_identity",
     sessionName,
     nodeId,
+    ...(conversationId ? { conversationId } : {}),
     runtime,
     generation,
     hookEvent: hookEvent || "SessionStart",
@@ -318,7 +393,9 @@ async function main() {
   // Contract response for Antigravity: must return valid JSON on stdout
   const isAntigravity = Boolean(
     (process.env.OPENRIG_RUNTIME || "").toLowerCase() === "antigravity" ||
+    process.env.ANTIGRAVITY_CONVERSATION_ID ||
     providerPayload.conversationId ||
+    providerPayload.conversation_id ||
     process.argv.includes("--event")
   );
   if (isAntigravity) {
@@ -339,6 +416,7 @@ module.exports = {
   buildOpenRigPayload,
   claimFirstLaunchHook,
   buildSessionIdentityPayload,
+  resolveAntigravityConversationSeat,
   parseJson,
   postHookPayload,
   resolveEndpoint,

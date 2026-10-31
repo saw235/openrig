@@ -196,7 +196,14 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
   }
 
   const codexHome = process.env.CODEX_HOME || nodePath.join(os.homedir(), ".codex");
-  const antigravityHome = process.env.ANTIGRAVITY_CLI_HOME || nodePath.join(os.homedir(), ".gemini", "antigravity-cli");
+  const { resolveAgentApiBinary, resolveAntigravityAppDataDir } = await import("../adapters/antigravity-agentapi-client.js");
+  const { shellQuote } = await import("../adapters/shell-quote.js");
+  const antigravityAppData = resolveAntigravityAppDataDir();
+  const agentapiBin = resolveAgentApiBinary({ appDataDir: antigravityAppData });
+  const hasAntigravityState =
+    existsSync(nodePath.join(antigravityAppData, "antigravity_state.pbtxt")) ||
+    existsSync(nodePath.join(antigravityAppData, "user_settings.pb")) ||
+    existsSync(agentapiBin);
   const [claudeCode, codex, antigravity] = await Promise.all([
     tryProbe("claude auth status"),
     probeCodexReadiness({
@@ -206,9 +213,9 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
       },
       env: process.env,
     }),
-    // Signed in = the CLI wrote its OAuth token AND the executable answers.
-    existsSync(nodePath.join(antigravityHome, "antigravity-oauth-token"))
-      ? tryProbe(`${process.env.OPENRIG_AGY_BIN || "agy"} --help`)
+    // Ready = Antigravity app data / agentapi is installed AND the agentapi executable answers.
+    hasAntigravityState
+      ? tryProbe(`${shellQuote(agentapiBin)} --help`)
       : Promise.resolve<RuntimeAuthStatus>("unavailable"),
   ]);
 
@@ -272,7 +279,7 @@ export function authBlockMessage(): string {
   return [
     "Error: Kernel rig cannot boot — no AI runtime is authenticated.",
     "Reason: Kernel rig requires at least one of Claude Code, Codex or Google Antigravity authenticated. All are unavailable.",
-    "Fix: Run `claude auth login` to authenticate Claude Code, OR `codex login` to authenticate Codex, OR run `agy` once to sign in to Google Antigravity. Then run `rig daemon start` (or `rig setup`) again.",
+    "Fix: Run `claude auth login` to authenticate Claude Code, OR `codex login` to authenticate Codex, OR open Antigravity IDE once to sign in to Google Antigravity. Then run `rig daemon start` (or `rig setup`) again.",
   ].join("\n");
 }
 
