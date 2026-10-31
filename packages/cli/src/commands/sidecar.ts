@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { OPENRIG_DIR } from "../daemon-lifecycle.js";
 import { openBrowserUrl } from "./ui.js";
@@ -48,9 +49,15 @@ export function sidecarCommand(): Command {
       const daemonUrl = opts.daemonUrl;
 
       if (opts.foreground) {
-        // Run foreground server
+        // Run foreground server (prefer staged standalone openrig-sidecar runtime when available)
         try {
-          const { startSidecarServer } = await import("@openrig/daemon/sidecar-server");
+          const stagedSidecarServer = path.join(OPENRIG_DIR, "runtime", "openrig-sidecar", "dist", "server.js");
+          let startSidecarServer: (o: { port: number; host: string; daemonUrl: string }) => Promise<{ url: string }>;
+          if (fs.existsSync(stagedSidecarServer)) {
+            ({ startSidecarServer } = await import(pathToFileURL(stagedSidecarServer).href) as typeof import("@openrig/daemon/sidecar-server"));
+          } else {
+            ({ startSidecarServer } = await import("@openrig/daemon/sidecar-server"));
+          }
           const { url } = await startSidecarServer({ port, host, daemonUrl });
 
           console.log(`\nOpenRig Sidecar (Antigravity Studio)`);

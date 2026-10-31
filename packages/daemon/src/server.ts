@@ -648,7 +648,9 @@ export function createApp(deps: AppDeps): Hono {
   app.use("/api/*", browserBoundary({
     webUiEnabled: deps.webUiEnabled === true,
     bearerTokens: [deps.terminalBearerToken, deps.missionControlBearerToken],
-    allowedOrigins: process.env.OPENRIG_ALLOWED_ORIGINS,
+    allowedOrigins: process.env.OPENRIG_ALLOWED_ORIGINS
+      ? `${process.env.OPENRIG_ALLOWED_ORIGINS},http://127.0.0.1:7434,http://localhost:7434`
+      : "http://127.0.0.1:7434,http://localhost:7434",
     allowedHosts: process.env.OPENRIG_ALLOWED_HOSTS,
     discoverSelfNames: deps.selfNameDiscovery,
     onDecision: deps.browserBoundaryObserver,

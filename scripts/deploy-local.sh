@@ -201,27 +201,27 @@ echo "  openrig-sidecar help: $(echo "$SIDECAR_HELP" | tr '\n' ' ')"
 # (f) Verify daemon (port 7433) and sidecar (port 7434) integration via rig sidecar
 echo "[6/6] Verifying daemon & sidecar integration..."
 
-# Check daemon health
-DAEMON_HEALTH="$(curl -s --connect-timeout 2 http://127.0.0.1:7433/api/health || echo "")"
-if [ -n "$DAEMON_HEALTH" ]; then
-  echo "  Daemon active on port 7433 (status: ok)"
+if [ "${SKIP_BUILD:-false}" = "true" ] || [ "${SKIP_SERVICE_VERIFY:-false}" = "true" ]; then
+  echo "  Skipping live daemon/sidecar network restart check (SKIP_BUILD / hermetic test mode)."
 else
-  echo "  Notice: OpenRig daemon not running on port 7433. Start with 'rig daemon start' when needed."
-fi
+  # Check daemon health
+  DAEMON_HEALTH="$(curl --noproxy '*' -s --connect-timeout 2 http://127.0.0.1:7433/healthz || echo "")"
+  if [ -n "$DAEMON_HEALTH" ]; then
+    echo "  Daemon active on port 7433 (status: ok)"
+  else
+    echo "  Notice: OpenRig daemon not running on port 7433. Start with 'rig daemon start' when needed."
+  fi
 
-# Check sidecar health and rig sidecar status
-SIDECAR_STATUS_OUT="$("$LOCAL_BIN/rig" sidecar status 2>&1 || true)"
-echo "  rig sidecar status: $SIDECAR_STATUS_OUT"
-
-SIDECAR_HEALTH="$(curl -s --connect-timeout 2 http://127.0.0.1:7434/api/health || echo "")"
-if [ -n "$SIDECAR_HEALTH" ]; then
-  echo "  Sidecar active on port 7434: healthy proxy to daemon verified"
-else
-  echo "  Sidecar not responding on port 7434. Starting via rig sidecar..."
-  fuser -k 7434/tcp 2>/dev/null || true
+  # Restart sidecar so freshly staged runtime takes effect immediately on port 7434
+  "$LOCAL_BIN/rig" sidecar stop >/dev/null 2>&1 || true
+  fuser -k 7434/tcp >/dev/null 2>&1 || true
   "$LOCAL_BIN/rig" sidecar --no-open 2>&1 || true
-  sleep 2
-  SIDECAR_HEALTH="$(curl -s --connect-timeout 2 http://127.0.0.1:7434/api/health || echo "")"
+  sleep 1
+
+  SIDECAR_STATUS_OUT="$("$LOCAL_BIN/rig" sidecar status 2>&1 || true)"
+  echo "  rig sidecar status: $SIDECAR_STATUS_OUT"
+
+  SIDECAR_HEALTH="$(curl --noproxy '*' -s --connect-timeout 2 http://127.0.0.1:7434/healthz || echo "")"
   if [ -n "$SIDECAR_HEALTH" ]; then
     echo "  Sidecar active on port 7434: healthy proxy to daemon verified"
   else
