@@ -177,6 +177,7 @@ import type { NotificationAdapter } from "./domain/mission-control/notification-
 import { OPENRIG_HOME } from "./openrig-compat.js";
 import { homeIsolationAdvisory } from "./domain/home-isolation.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
+import { withAgentAppResolver, withAgentApps } from "./adapters/agent-app-runtime-adapter.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import {
   getCompatibleOpenRigPath,
@@ -1048,7 +1049,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db, rigRepo, podRepo,
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
     fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
-    adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "antigravity": antigravityAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    adapters: withAgentApps({ "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "antigravity": antigravityAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() }, { tmux: tmuxAdapter, seatLaunchEnvironment }),
     tmuxAdapter,
     agentImageLibrary,
     continuityPolicyMaterializer,
@@ -1160,6 +1161,27 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // GHOST-STAGE (c-id): reject context readings from before the live occupant booted (prior
     // generation) so a frozen pre-handover sample can't drive the threshold. null = UNKNOWN (inert).
     resolveOccupantBootAt: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.bootAt ?? null,
+  });
+  // Shared, read-only current-occupant record path: reporting does not depend on a pin or transport.
+  const { CurrentModelReader } = await import("./domain/model-divergence/current-model-reader.js");
+  const { ProcessCensus: ModelProcessCensus } = await import("./domain/process-census.js");
+  const { CodexThreadIdResolver: ModelThreadResolver } = await import("./domain/codex-thread-id.js");
+  const modelCensus = new ModelProcessCensus();
+  const modelThreads = new ModelThreadResolver({ defaultHome: daemonHome, codexHome: configuredCodexHome });
+  const currentModelReader = new CurrentModelReader({
+    sessions: sessionRegistry, identities: new SeatIdentityStore(db), context: contextUsageStore,
+    census: modelCensus,
+    readAllPaneProcesses: () => tmuxAdapter.readAllPaneProcesses(),
+    native: {
+      getPanePid: async (target) => tmuxAdapter.getPanePid ? tmuxAdapter.getPanePid(target) : null,
+      listProcesses: () => modelCensus.list(),
+      readThreadIdByPid: (pid, identity) => identity === undefined
+        ? modelThreads.resolveUngatedLegacy(pid) : modelThreads.resolve(pid, identity),
+    },
+    codexRollout: (threadId, sessionName, reporting) => reporting
+      ? contextUsageStore.readCodexTranscriptPath(threadId)
+      : contextUsageStore.readCodexAndNormalize({ threadId, sessionName }).transcriptPath,
+    piRunner: (sessionName) => piAdapter.readRunnerSidecar(sessionName),
   });
   const { HealthProjectionService, LiveContextHealthSource } = await import("./domain/health-detectors.js");
   const healthSettingsStore = new ContextPackSettingsStore();
@@ -1275,7 +1297,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Capture compatibility before the spec-library initializer creates the primary directory.
   const userSpecLibraryRoot = getDefaultOpenRigPath("specs");
   const compatibleSpecLibraryRoot = getCompatibleOpenRigPath("specs");
-  const runtimeAdaptersMap = {
+  const runtimeAdaptersMap = withAgentAppResolver({
     "claude-code": claudeAdapter,
     "codex": codexAdapter,
     "pi": piAdapter,
@@ -1283,7 +1305,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     "antigravity": antigravityAdapter,
     "stub": stubAdapter,
     "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter(),
-  };
+  }, { tmux: tmuxAdapter, seatLaunchEnvironment });
 
   const deps: AppDeps = {
     rigRepo,
@@ -1475,6 +1497,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     seatAttentionReconciler,
     activityHookToken: resolvedActivityHookToken,
     contextUsageStore,
+    currentModelReader,
     healthProjection,
     healthDiagnosis,
     healthPolicy,
@@ -2177,6 +2200,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
                 limit,
               }),
               getParkWake: (qitemId: string) => queueRepoInstance.getParkWakeStatus(qitemId),
+              servedByOwnReminder: (qitemId: string) => queueRepoInstance.parkWakeServedByOwnReminder(qitemId),
             };
             return diagnoseRigParked(
               parkedDeps,
@@ -2313,31 +2337,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // (no daemon-side cross-host send seam exists yet — the deferral names that, never silence).
     {
       const { ModelDivergenceMonitor } = await import("./domain/model-divergence/model-divergence-monitor.js");
-      const { readClaudeEffectiveModel, readCodexEffectiveModel } = await import("./domain/model-divergence/effective-model-readers.js");
-      const { resolveIdentityVerifiedClaudeRecord, resolveLiveCodexThreadId } = await import("./domain/model-divergence/current-generation-record.js");
-      const { defaultListProcesses } = await import("./domain/resume-metadata-refresher.js");
-      const { readCodexThreadIdFromCandidateHomes, defaultResolveHomeDirByPid } = await import("./domain/codex-thread-id.js");
-      const nodeOs = await import("node:os");
-      const nodeFs = await import("node:fs");
-      const seatIdentityStore = new SeatIdentityStore(db);
-      // OPR.0.5.3.10 — ONE shared census + ONE PID-home resolver for the whole
-      // divergence surface: no more `ps -Ao` per seat per poll, no more `ps eww`
-      // per pid (default-home-first + bounded PID cache).
-      const { ProcessCensus } = await import("./domain/process-census.js");
-      const { CodexThreadIdResolver } = await import("./domain/codex-thread-id.js");
-      const divergenceCensus = new ProcessCensus();
-      const codexThreadIdResolver = new CodexThreadIdResolver({ defaultHome: nodeOs.homedir(), codexHome: configuredCodexHome });
-      const currentGenDeps = {
-        getPanePid: async (sessionTarget: string) => tmuxAdapter.getPanePid ? tmuxAdapter.getPanePid(sessionTarget) : null,
-        listProcesses: () => divergenceCensus.list(),
-        // S10 follow-on: identity REQUIRED on resolve(); the identity-less case routes EXPLICITLY
-        // through the named ungated escape hatch — never a silent fallback (r1 owed item 3).
-        readThreadIdByPid: (pid: number, identity?: string) =>
-          identity === undefined ? codexThreadIdResolver.resolveUngatedLegacy(pid) : codexThreadIdResolver.resolve(pid, identity),
-      };
       const OVERSIGHT_SEAT = "watch-lead@oversight";
       const modelDivergenceMonitor = new ModelDivergenceMonitor({
-        processCensus: divergenceCensus,
+        processCensus: modelCensus,
         listPinnedSeats: () => {
           const rows = db.prepare(`
             SELECT n.id AS nodeId, r.id AS rigId, r.name AS rigName, n.runtime AS runtime, n.model AS pinnedModel,
@@ -2351,44 +2353,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             .filter((row): row is typeof row & { sessionName: string } => row.sessionName !== null)
             .map((row) => ({ ...row, generation: sessionRegistry.currentOccupantGenerationForSession(row.sessionName) }));
         },
-        // D-a / OPR.0.5.9.13 — the CURRENT GENERATION's record through the canonical binding and
-        // verified pane identity, never a name, registry token, or transcript recency lookup. A
-        // retained predecessor may keep writing under the canonical launch-time name forever.
-        // Every missing or ambiguous identity join is an explicit no-answer.
-        readEffectiveModel: async (seat, cycle) => {
-          // OPR.0.5.3.10 mini-req 1 — the poll-scoped census (one ps per pass) when the
-          // monitor threads it; the shared coalescing census otherwise.
-          const genDeps = cycle ? { ...currentGenDeps, listProcesses: cycle.listProcesses } : currentGenDeps;
-          if (seat.runtime === "codex") {
-            const live = await resolveLiveCodexThreadId(seat.sessionName, genDeps);
-            if (!live.ok) return { ok: false as const, reason: live.reason };
-            const rollout = contextUsageStore.readCodexAndNormalize({ threadId: live.id, sessionName: seat.sessionName }).transcriptPath;
-            if (!rollout) return { ok: false as const, reason: `live thread ${live.id.slice(0, 8)}… has no readable rollout` };
-            const model = readCodexEffectiveModel(rollout);
-            return model ? { ok: true as const, model } : { ok: false as const, reason: `no model signal in the bounded read of ${rollout}` };
-          }
-          if (seat.runtime === "claude-code") {
-            const tenure = sessionRegistry.currentOccupantTenure(seat.nodeId);
-            const sidecar = contextUsageStore.readSidecar(seat.sessionName);
-            const binding = sessionRegistry.getBindingForNode(seat.nodeId);
-            const selection = await resolveIdentityVerifiedClaudeRecord({
-              sessionName: seat.sessionName,
-              generation: seat.generation,
-              occupantBootAt: tenure?.bootAt ?? null,
-              binding: binding ? { tmuxSession: binding.tmuxSession, tmuxPane: binding.tmuxPane } : null,
-              identity: seatIdentityStore.getForNode(seat.nodeId),
-              sidecar: sidecar.ok ? sidecar.data : null,
-            }, genDeps, (path) => {
-              try { return nodeFs.statSync(path).isFile(); } catch { return false; }
-            });
-            if (!selection.ok) return { ok: false as const, reason: selection.reason };
-            const model = readClaudeEffectiveModel(selection.path);
-            return model
-              ? { ok: true as const, model }
-              : { ok: false as const, reason: `no assistant turn yet in the current occupant record ${selection.path} (selected from ${selection.source})` };
-          }
-          return { ok: false as const, reason: `runtime ${seat.runtime ?? "unknown"} has no effective-model reader yet` };
-        },
+        readEffectiveModel: (seat, cycle) => currentModelReader.readEffectiveModel(seat, cycle),
         sendToSession: async (target, message, deliveryId) => {
           try {
             const previous = deliveryId ? outboxHandlerInstance.getById(deliveryId) : null;
