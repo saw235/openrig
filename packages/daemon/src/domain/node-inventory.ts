@@ -1137,6 +1137,40 @@ export function attachTerminalActivityAndWork(
           }
         : null;
     }
+    if (entry.agentActivity) {
+      const act = entry.agentActivity as AgentActivity;
+      if (act.rawEvent === "at_limit" && !act.stale) {
+        activityState = activityState
+          ? {
+              ...activityState,
+              display: "needs-input",
+              needsInput: { count: 1, reason: "usage_limit" },
+            }
+          : {
+              activity: "unknown",
+              display: "needs-input",
+              needsInput: { count: 1, reason: "usage_limit" },
+              decidedBy: null,
+              seq: 0,
+              lastSwap: null,
+            };
+      } else if (act.state === "idle" && (!activityState || activityState.display === "working")) {
+        activityState = activityState
+          ? {
+              ...activityState,
+              activity: "idle-at-prompt",
+              display: "idle",
+            }
+          : {
+              activity: "idle-at-prompt",
+              display: "idle",
+              needsInput: { count: 0, reason: null },
+              decidedBy: null,
+              seq: 0,
+              lastSwap: null,
+            };
+      }
+    }
     const work = countAssignedWorkForEntry(entry, assignedByDest);
     return {
       ...entry,
@@ -1292,7 +1326,7 @@ export async function attachAgentActivity(
 ): Promise<NodeInventoryEntry[]> {
   const sampledAt = deps.now ?? new Date();
   const captureFallback = deps.captureFallback ?? false;
-  return Promise.all(entries.map(async (entry) => {
+  const resolved: NodeInventoryEntry[] = await Promise.all(entries.map(async (entry): Promise<NodeInventoryEntry> => {
     // A cached hook, pane sample or motion cannot revive a confirmed absent
     // session. Preserve the identity observation's provenance without probing.
     if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) {
@@ -1431,15 +1465,19 @@ export async function attachAgentActivity(
     // just-finished-a-turn seats: the exact fleet-blindness this fix targets. Structural discrimination
     // is STRUCTURAL (spinner shapes / esc-to-interrupt / idle prompt), never a verb allowlist.
     if (structural && structural.state !== "unknown") {
+      const structuralActivity: AgentActivity = {
+        state: mapPaneState(structural.state),
+        reason: structural.reason,
+        evidenceSource: "pane_heuristic",
+        sampledAt: structural.observedAt,
+        evidence: structural.evidence,
+      };
+      // For Antigravity, agy's terminal redraws continuously even at the prompt;
+      // an explicit structural idle verdict must not be converted to running by motion.
+      const shouldApplyMotion = !(entry.runtime === "antigravity" && structural.state === "agent_idle");
       return {
         ...entry,
-        agentActivity: withMotion({
-          state: mapPaneState(structural.state),
-          reason: structural.reason,
-          evidenceSource: "pane_heuristic",
-          sampledAt: structural.observedAt,
-          evidence: structural.evidence,
-        }),
+        agentActivity: shouldApplyMotion ? withMotion(structuralActivity) : structuralActivity,
       };
     }
 
@@ -1489,4 +1527,30 @@ export async function attachAgentActivity(
     })),
     };
   }));
+
+  return resolved.map((entry): NodeInventoryEntry => {
+    const act = entry.agentActivity as AgentActivity | undefined;
+    if (!act || !entry.activityState) return entry;
+    if (act.rawEvent === "at_limit" && !act.stale) {
+      return {
+        ...entry,
+        activityState: {
+          ...entry.activityState,
+          display: "needs-input",
+          needsInput: { count: 1, reason: "usage_limit" },
+        },
+      };
+    }
+    if (act.state === "idle" && entry.activityState.display === "working") {
+      return {
+        ...entry,
+        activityState: {
+          ...entry.activityState,
+          activity: "idle-at-prompt",
+          display: "idle",
+        },
+      };
+    }
+    return entry;
+  });
 }

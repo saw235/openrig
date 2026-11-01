@@ -40,6 +40,7 @@ import { useRigSummary } from "./hooks/useRigSummary.js";
 import { EmptyState } from "./components/ui/empty-state.js";
 // Phase 3 destination components.
 import { Dashboard } from "./components/dashboard/Dashboard.js";
+import { AntigravityWorkspace } from "./components/antigravity/AntigravityWorkspace.js";
 import { Feed } from "./components/for-you/Feed.js";
 import { SpecsLibraryPage } from "./components/specs/SpecsLibraryPage.js";
 import { SkillDetailPage } from "./components/specs/SkillDetailPage.js";
@@ -97,6 +98,12 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: Dashboard,
+});
+
+const antigravityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/antigravity",
+  component: AntigravityWorkspace,
 });
 
 // Topology destination: SC-5 / SC-10 — single URL with view-mode tabs IN-PLACE
@@ -544,6 +551,7 @@ export const routeTree = rootRoute.addChildren([
   topologyPodRoute,
   topologySeatRoute,
   forYouRoute,
+  antigravityRoute,
   projectRoute,
   projectMissionRoute,
   projectSliceRoute,

@@ -40,6 +40,8 @@ export interface PiAdapterFsOps {
   listFiles?(dirPath: string): string[];
   statMode?(path: string): number;
   chmod?(path: string, mode: number): void;
+  /** Binary-safe copy (used to seed OMP OAuth credentials into a seat). */
+  copyFile?(from: string, to: string): void;
 }
 
 export interface PiRuntimeAdapterDeps {
@@ -63,6 +65,10 @@ export interface PiRuntimeAdapterDeps {
   usageFactsEnabled?: () => boolean;
   /** OPR.0.7.0.2 K4: whether usage.pi_openrouter_charge is on, read at each launch (absent = off). */
   openRouterChargeEnabled?: () => boolean;
+  /** OMP only: the operator's own OMP agent dir (default ~/.omp/agent). Its credential
+   *  database is seeded into a seat's isolated HOME so OAuth providers such as
+   *  google-antigravity work without a second login per seat. */
+  operatorOmpAgentDir?: string;
 }
 
 export class PiRuntimeAdapter implements RuntimeAdapter {
@@ -77,10 +83,12 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   private newLaunchId: () => string;
   private usageFactsEnabled: () => boolean;
   private openRouterChargeEnabled: () => boolean;
+  private operatorOmpAgentDir?: string;
 
   constructor(deps: PiRuntimeAdapterDeps) {
     this.usageFactsEnabled = deps.usageFactsEnabled ?? (() => false);
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
+    this.operatorOmpAgentDir = deps.operatorOmpAgentDir;
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
@@ -262,6 +270,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     const paths = piSeatPaths(this.stateRoot, sessionName);
     this.fs.mkdirp(paths.agentDir);
     this.fs.mkdirp(paths.sessionsDir);
+    if (this.runtime === "omp") this.seedOmpOAuth(paths.agentDir);
 
     // Launch-attempt scoping (guard fold): overwrite any stale sidecar from a
     // prior runner instance with a pending record BEFORE the command is typed,
@@ -387,6 +396,28 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
+
+  /** The seat runs with HOME=<seatRoot> and PI_CODING_AGENT_DIR=<seatRoot>/agent, which hides the
+   *  operator's ~/.omp/agent credential db. Copy it in ONCE (never overwrite: a seat's refreshed
+   *  OAuth token is newer than the operator's copy). Both locations OMP may read are seeded. */
+  private seedOmpOAuth(agentDir: string): void {
+    const source = this.operatorOmpAgentDir;
+    if (!source || !this.fs.copyFile) return;
+    const credentialDb = nodePath.join(source, "agent.db");
+    if (!this.fs.exists(credentialDb)) return;
+    const seatRoot = nodePath.dirname(agentDir);
+    for (const dir of [agentDir, nodePath.join(seatRoot, ".omp", "agent")]) {
+      const target = nodePath.join(dir, "agent.db");
+      if (this.fs.exists(target)) continue;
+      try {
+        this.fs.mkdirp(dir);
+        this.fs.copyFile(credentialDb, target);
+        this.fs.chmod?.(target, 0o600);
+      } catch {
+        // Best-effort: without credentials OMP surfaces its own login prompt.
+      }
+    }
+  }
 
   private readRunnerState(sessionName: string): PiRunnerState | null {
     const { runnerStatePath } = piSeatPaths(this.stateRoot, sessionName);

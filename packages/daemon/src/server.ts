@@ -58,6 +58,7 @@ import type { TranscriptStore } from "./domain/transcript-store.js";
 import type { SessionTransport } from "./domain/session-transport.js";
 import type { AgentActivityStore } from "./domain/agent-activity-store.js";
 import { transcriptRoutes } from "./routes/transcripts.js";
+import { renderSidecarHtml } from "./sidecar/sidecar-html.js";
 import { transportRoutes } from "./routes/transport.js";
 import { compactionRoutes } from "./routes/compaction.js";
 import type { ClaudeCompactionEnforcer } from "./domain/claude-compaction-enforcer.js";
@@ -650,7 +651,9 @@ export function createApp(deps: AppDeps): Hono {
   app.use("/api/*", browserBoundary({
     webUiEnabled: deps.webUiEnabled === true,
     bearerTokens: [deps.terminalBearerToken, deps.missionControlBearerToken],
-    allowedOrigins: process.env.OPENRIG_ALLOWED_ORIGINS,
+    allowedOrigins: process.env.OPENRIG_ALLOWED_ORIGINS
+      ? `${process.env.OPENRIG_ALLOWED_ORIGINS},http://127.0.0.1:7434,http://localhost:7434`
+      : "http://127.0.0.1:7434,http://localhost:7434",
     allowedHosts: process.env.OPENRIG_ALLOWED_HOSTS,
     discoverSelfNames: deps.selfNameDiscovery,
     onDecision: deps.browserBoundaryObserver,
@@ -845,6 +848,10 @@ export function createApp(deps: AppDeps): Hono {
     "/api/rig-mode",
     rigModeRoutes({ bearerToken: deps.missionControlBearerToken ?? null }),
   );
+
+  app.get("/sidecar", (c) => {
+    return c.html(renderSidecarHtml(""));
+  });
 
   app.all("/api/*", async (c, next) => {
     if (c.req.path === "/api") return next();

@@ -3,6 +3,7 @@ import type { PaneCapture, TmuxAdapter } from "../adapters/tmux.js";
 import { agentAppPaneActivity, classifyPaneActivity, type PaneActivityClassification } from "./session-transport.js";
 import { agentAppOf } from "./built-in-runtimes.js";
 import { detectCodexLimitBanner, type CodexLimitBanner } from "./provider/codex-limit-banner.js";
+import { detectAntigravityLimitBanner, type AntigravityLimitBanner } from "./provider/antigravity-limit-banner.js";
 import { IDLE_FULL_CAPTURE_MS, windowSnapshot } from "./transcript-rotation.js";
 import { sessionAgentAppSelect } from "./session-registry.js";
 
@@ -55,6 +56,9 @@ export class SeatStructuralActivityService {
   private bannerEmitter:
     | ((sessionName: string, banner: CodexLimitBanner | null, observedAt: Date) => void)
     | null = null;
+  private antigravityBannerEmitter:
+    | ((sessionName: string, banner: AntigravityLimitBanner | null, observedAt: Date) => void)
+    | null = null;
 
   constructor(
     private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "capturePanesContent" | "readAllSessionWindowActivity" | "readAllSessionWindows">>,
@@ -72,6 +76,15 @@ export class SeatStructuralActivityService {
     emitter: (sessionName: string, banner: CodexLimitBanner | null, observedAt: Date) => void,
   ): void {
     this.bannerEmitter = emitter;
+  }
+
+  /**
+   * Attach the Antigravity limit-banner emitter.
+   */
+  attachAntigravityLimitBanner(
+    emitter: (sessionName: string, banner: AntigravityLimitBanner | null, observedAt: Date) => void,
+  ): void {
+    this.antigravityBannerEmitter = emitter;
   }
 
   /** The cached structural observation — ONLY while current (capture-FREE read). Returns null AND evicts
@@ -130,6 +143,12 @@ export class SeatStructuralActivityService {
         this.bannerEmitter(sessionName, banner, at);
       }
     }
+    if ((runtime === "antigravity" || !runtime) && this.antigravityBannerEmitter) {
+      const banner = detectAntigravityLimitBanner(content);
+      if (banner || (content.trim().length > 0 && c.state !== "unknown")) {
+        this.antigravityBannerEmitter(sessionName, banner, at);
+      }
+    }
     return obs;
   }
 
@@ -169,8 +188,10 @@ export class SeatStructuralActivityService {
         const seen = this.capturedActivity.get(r.session_name);
         const now = activity?.get(r.session_name);
         const obs = this.latestBySession.get(r.session_name);
-        // The Codex limit row is refreshed by the capture that sees the banner, and ages out without it.
-        if (runtimeBySession.get(r.session_name) === "codex" && this.bannerEmitter) return true;
+        // The Codex and Antigravity limit rows are refreshed by the capture that sees the banner, and age out without it.
+        const rtime = runtimeBySession.get(r.session_name);
+        if (rtime === "codex" && this.bannerEmitter) return true;
+        if (rtime === "antigravity" && this.antigravityBannerEmitter) return true;
         if (seen && obs && now !== undefined && now.activity === seen.activity && now.size === seen.size && now.activity < seen.startSec
           && sweepAt.getTime() - seen.fullAt < IDLE_FULL_CAPTURE_MS) {
           this.latestBySession.set(r.session_name, { ...obs, checkedAt: sweepAt.toISOString() });

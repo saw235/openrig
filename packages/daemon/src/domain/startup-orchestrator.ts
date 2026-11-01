@@ -1006,6 +1006,31 @@ export class StartupOrchestrator {
     const sendOrder = ++input.sendOrder;
     const tmuxSession = input.binding.tmuxSession!;
     input.lastSubmissionConfirmed = false;
+
+    if (typeof input.adapter.sendInteractiveText === "function") {
+      const directResult = await input.adapter.sendInteractiveText(input.binding, text, {
+        sessionId: input.sessionId,
+        source,
+      });
+      if (!directResult.ok) {
+        return { error: directResult.error };
+      }
+      if (directResult.resumeToken && directResult.resumeType) {
+        try {
+          this.sessionRegistry.updateResumeToken(
+            input.sessionId,
+            directResult.resumeType,
+            directResult.resumeToken,
+            "hook",
+          );
+        } catch {
+          // Best-effort token update; never fail an already-delivered prompt
+        }
+      }
+      input.lastSubmissionConfirmed = true;
+      return null;
+    }
+
     const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
     if (!textResult.ok) {
       return { error: (textResult as { message?: string }).message ?? "unknown" };

@@ -1,13 +1,19 @@
-export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "omp" | "terminal" | "unknown";
+export type RuntimeBrandId = "antigravity" | "claude-code" | "codex" | "pi" | "omp" | "terminal" | "unknown";
 
 export interface RuntimeBrand {
   id: RuntimeBrandId;
   label: string;
   shortLabel: string;
-  tone: "sand" | "green" | "slate" | "violet" | "neutral";
+  tone: "blue" | "sand" | "green" | "slate" | "violet" | "neutral";
 }
 
 const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
+  antigravity: {
+    id: "antigravity",
+    label: "Google Antigravity",
+    shortLabel: "AGY",
+    tone: "blue",
+  },
   "claude-code": {
     id: "claude-code",
     label: "Claude",
@@ -49,6 +55,7 @@ const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
 
 export function normalizeRuntimeBrandId(runtime: string | null | undefined): RuntimeBrandId {
   const normalized = runtime?.toLowerCase().trim() ?? "";
+  if (normalized === "antigravity" || normalized === "agy" || normalized.includes("antigravity")) return "antigravity";
   if (normalized === "claude" || normalized === "claude-code" || normalized.includes("claude")) return "claude-code";
   if (normalized === "codex" || normalized.includes("codex") || normalized.includes("openai")) return "codex";
   // Exact/prefixed match only — never a bare `includes("pi")` (api/pilot/…).

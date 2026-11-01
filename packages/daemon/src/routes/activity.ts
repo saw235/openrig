@@ -172,9 +172,11 @@ activityRoutes.post("/hooks", async (c) => {
   if (body.eventFamily === "session_identity") {
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
     const sessionName = stringOrNull(body.sessionName);
+    const nodeId = stringOrNull(body.nodeId);
     const runtime = stringOrNull(body.runtime);
-    if (!sessionId || !sessionName) {
-      return c.json({ ok: false, code: "missing_session_identity", error: "session_identity requires sessionId and sessionName" }, 400);
+    const conversationId = stringOrNull(body.conversationId) ?? (runtime === "antigravity" ? sessionId : null);
+    if (!sessionId || (!sessionName && !nodeId && !conversationId)) {
+      return c.json({ ok: false, code: "missing_session_identity", error: "session_identity requires sessionId and sessionName (or conversationId)" }, 400);
     }
 
     const sessionRegistry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
@@ -183,10 +185,9 @@ activityRoutes.post("/hooks", async (c) => {
       return c.json({ ok: false, code: "identity_hook_unconfigured", error: "Session registry not available" }, 503);
     }
 
-    const nodeId = stringOrNull(body.nodeId);
-    const resolved = store.resolveSession({ sessionName, nodeId, runtime });
+    const resolved = store.resolveSession({ sessionName, nodeId, conversationId, runtime });
     if (!resolved) {
-      return c.json({ ok: false, code: "session_not_found", error: `No session found for ${sessionName}` }, 404);
+      return c.json({ ok: false, code: "session_not_found", error: `No session found for ${sessionName ?? nodeId ?? conversationId}` }, 404);
     }
     // OMP session identity (hook or seat) is strict: the exact seat name, the
     // seat's own runtime, the current occupant generation, and a materialized
@@ -368,17 +369,36 @@ activityRoutes.post("/hooks", async (c) => {
     return c.json({ ok: true, oriented: "verified", nodeId: result.nodeId, challengeId: result.challengeId });
   }
 
+  const hookConversationId = stringOrNull(body.conversationId);
+  let hookGeneration = stringOrNull(body.generation);
+  if (!hookGeneration && hookConversationId) {
+    const sessionRegistry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+    if (sessionRegistry) {
+      try {
+        const matched = store.db.prepare(
+          "SELECT node_id FROM sessions WHERE resume_token = ? AND resume_type = 'antigravity_id' AND status = 'running' ORDER BY id DESC LIMIT 1",
+        ).get(hookConversationId) as { node_id: string } | undefined;
+        if (matched?.node_id) {
+          hookGeneration = sessionRegistry.currentOccupantTenure(matched.node_id)?.generationUuid ?? null;
+        }
+      } catch {
+        // leave hookGeneration null
+      }
+    }
+  }
+
   const result = store.recordHookEvent({
     runtime: stringOrNull(body.runtime),
     sessionName: stringOrNull(body.sessionName),
     nodeId: stringOrNull(body.nodeId),
+    conversationId: hookConversationId,
     hookEvent: typeof body.hookEvent === "string" ? body.hookEvent : "",
     subtype: stringOrNull(body.subtype),
     occurredAt: stringOrNull(body.occurredAt),
     // W2a-1 — source-bound emitting generation, carried by managed launch/fresh-handover producers.
     // Legacy, excluded, or no-tenure emitting paths may omit it ⇒ stamped null ⇒ unresolved at read
     // (sound per-path absence; never false-fresh).
-    generation: stringOrNull(body.generation),
+    generation: hookGeneration,
     turnId: stringOrNull(body.turnId),
   });
 

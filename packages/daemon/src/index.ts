@@ -1,6 +1,18 @@
 import { serve, type ServerType } from "@hono/node-server";
 import path from "node:path";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
+
+// Ensure standard user binary locations are present on PATH so that runtimes like agentapi, omp, etc. are always found
+for (const binDir of [
+  path.join(os.homedir(), ".local", "bin"),
+  path.join(os.homedir(), ".gemini", "antigravity", "bin"),
+]) {
+  if (!process.env.PATH?.split(path.delimiter).includes(binDir)) {
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH || ""}`;
+  }
+}
+
 import { endProbeGroupsOnStartupSignal, stopRuntimeProbes } from "./adapters/bounded-probe-exec.js";
 import { closeHttpServer, createDaemonShutdown, DAEMON_SHUTDOWN_RECEIPT, trackHttpServerResponses } from "./daemon-shutdown.js";
 import { readOpenRigEnv, OPENRIG_HOME } from "./openrig-compat.js";

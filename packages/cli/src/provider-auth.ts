@@ -10,7 +10,7 @@ export interface ProviderAuthDeps {
 
 export interface ProviderCheck {
   name: string;
-  status: "pass" | "fail" | "skipped";
+  status: "pass" | "warn" | "fail" | "skipped";
   message: string;
   reason?: string;
   fix?: string;
@@ -120,6 +120,43 @@ export function checkCodexAuth(deps: ProviderAuthDeps, installed: boolean): Prov
   }
 }
 
+function resolveAntigravityPaths(env: NodeJS.ProcessEnv): { appDataDir: string; agentapiBin: string } {
+  const appDataDir = env.ANTIGRAVITY_APP_DATA_DIR?.trim() || path.join(env.HOME ?? "", ".gemini", "antigravity");
+  const agentapiBin =
+    env.ANTIGRAVITY_AGENTAPI_BIN?.trim() ||
+    env.OPENRIG_AGENTAPI_BIN?.trim() ||
+    path.join(appDataDir, "bin", "agentapi");
+  return { appDataDir, agentapiBin };
+}
+
+/** Google Antigravity: uses the Antigravity IDE / Language Server `agentapi` bridge (`~/.gemini/antigravity/bin/agentapi`)
+ *  and IDE state in `~/.gemini/antigravity`. Optional runtime, so an absent CLI is skipped rather than failed. */
+export function checkAntigravityAuth(deps: ProviderAuthDeps, installed: boolean): ProviderCheck {
+  if (!installed) {
+    return {
+      name: "antigravity_auth",
+      status: "skipped",
+      message: "Skipped: Google Antigravity (agentapi) is not installed.",
+      reason: "Authentication cannot be checked until Antigravity IDE (agentapi) is installed.",
+    };
+  }
+  const env = deps.env ?? process.env;
+  const { appDataDir } = resolveAntigravityPaths(env);
+  if (
+    deps.readFile(path.join(appDataDir, "antigravity_state.pbtxt")) !== null ||
+    deps.readFile(path.join(appDataDir, "user_settings.pb")) !== null
+  ) {
+    return { name: "antigravity_auth", status: "pass", message: "Google Antigravity IDE state available." };
+  }
+  return {
+    name: "antigravity_auth",
+    status: "fail",
+    message: "Google Antigravity (agentapi) is installed but IDE user state was not found.",
+    reason: "Antigravity seats require an initialized and signed-in Antigravity IDE installation.",
+    fix: "Open Antigravity IDE once and complete Google sign-in, then rerun `rig setup`.",
+  };
+}
+
 /** Read-only checks: neither installs a CLI nor starts a login or agent session. */
 export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] {
   const checks: ProviderCheck[] = [];
@@ -140,6 +177,13 @@ export function checkProviderReadiness(deps: ProviderAuthDeps): ProviderCheck[] 
       });
     }
     checks.push(auth(deps, installed));
+  }
+  // Optional third runtime: reported only when its local agentapi bridge script is present,
+  // avoiding subprocess probes for unconfigured hosts while surfacing IDE state readiness when installed.
+  const { agentapiBin } = resolveAntigravityPaths(deps.env ?? process.env);
+  if (deps.readFile(agentapiBin) !== null) {
+    checks.push({ name: "antigravity_install", status: "pass", message: "Google Antigravity (agentapi) available." });
+    checks.push(checkAntigravityAuth(deps, true));
   }
   return checks;
 }

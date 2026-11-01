@@ -41,6 +41,7 @@ import { queueCommand, type QueueDeps } from "./commands/queue.js";
 import { slackCommand, type SlackDeps } from "./commands/slack.js";
 import { projectCommand, type ProjectDeps } from "./commands/project.js";
 import { viewCommand, type ViewDeps } from "./commands/view.js";
+import { sidecarCommand } from "./commands/sidecar.js";
 import { terminalCommand, type TerminalDeps } from "./commands/terminal.js";
 import { watchdogCommand, type WatchdogDeps } from "./commands/watchdog.js";
 import { workflowCommand, type WorkflowDeps } from "./commands/workflow.js";
@@ -91,6 +92,7 @@ import { rigModeCommand, type RigModeDeps } from "./commands/rig-mode.js";
 import { policyCommand } from "./commands/policy.js";
 import { startupProofCommand, type StartupProofDeps } from "./commands/startup-proof.js";
 import type { LifecycleDeps } from "./daemon-lifecycle.js";
+import { hydrateAntigravitySeatEnv } from "./antigravity-seat-env.js";
 import { configureRoot } from "./program-root.js";
 
 export interface ProgramDeps {
@@ -262,6 +264,8 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(scopeCommand());
   // OPR.0.4.4.19 FR-8 — rig proof: the C1 proof-drop write path.
   program.addCommand(proofCommand());
+  // Standalone Antigravity Sidecar
+  program.addCommand(sidecarCommand());
 
   return program;
 }
@@ -284,6 +288,7 @@ export { runFrontDoor } from "./front-door.js";
 
 // Only parse when executed directly (not imported for testing)
 if (isDirectRun()) {
+  hydrateAntigravitySeatEnv(process.env);
   // Slice-17 mini-req 7 — bare `rig` in a real terminal opens the TUI; any
   // arg or a non-TTY stream falls through to the normal program unchanged.
   const { runFrontDoor } = await import("./front-door.js");

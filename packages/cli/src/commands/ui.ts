@@ -15,6 +15,48 @@ export const UI_DISABLED_GUIDANCE =
 
 export const UI_MAINTENANCE_NOTICE =
   "The OpenRig UI is experimental and in maintenance mode. It is not under active development; support is best-effort. The CLI is the primary supported interface. Contributions welcome.";
+export async function openBrowserUrl(
+  url: string,
+  exec?: (cmd: string, args: string[]) => Promise<void>,
+): Promise<void> {
+  const runner = exec ?? (async (cmd, args) => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    await promisify(execFile)(cmd, args);
+  });
+
+  const isWsl = process.platform === "linux" && !!(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+  if (isWsl) {
+    try {
+      await runner("wslview", [url]);
+      return;
+    } catch {
+      try {
+        await runner("cmd.exe", ["/c", "start", "", url]);
+        return;
+      } catch {
+        // fall through
+      }
+    }
+  } else if (process.platform === "darwin") {
+    try {
+      await runner("open", [url]);
+      return;
+    } catch {
+      // fall through
+    }
+  } else if (process.platform === "linux") {
+    try {
+      await runner("xdg-open", [url]);
+      return;
+    } catch {
+      // fall through
+    }
+  }
+
+  // Fallback
+  await runner("open", [url]);
+}
 
 export function uiCommand(depsOverride?: UiDeps): Command {
   const cmd = new Command("ui").description("UI commands");

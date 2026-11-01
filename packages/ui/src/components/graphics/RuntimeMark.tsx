@@ -36,6 +36,7 @@ const inlineSizeClass = {
 };
 
 const toneClass: Record<RuntimeBrandId, string> = {
+  antigravity: "border-secondary/45 bg-secondary/[0.12] text-secondary",
   "claude-code": "border-[#9f5f4e]/40 bg-[#b06a57]/[0.12] text-[#62392f]",
   codex: "border-outline/50 bg-surface-lowest/75 text-on-surface",
   pi: "border-[#4c5b9e]/45 bg-[#5b6bb5]/[0.10] text-[#33406e]",
@@ -45,6 +46,7 @@ const toneClass: Record<RuntimeBrandId, string> = {
 };
 
 const inlineToneClass: Record<RuntimeBrandId, string> = {
+  antigravity: "text-secondary",
   "claude-code": "text-[#62392f]",
   codex: "text-on-surface",
   pi: "text-[#33406e]",
